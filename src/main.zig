@@ -5,12 +5,25 @@ const net = Io.net;
 
 const listen_port: u16 = 8080;
 const max_body_bytes: usize = 16 * 1024;
+// Connections are I/O-bound (mostly waiting on the network), so allowing
+// several per CPU core keeps throughput up without letting an unbounded
+// number of 16 MiB thread stacks pile up under a connection flood.
+const max_connections_per_cpu: usize = 4;
 
 const index_html = @embedFile("web/index.html");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
-    const io = init.io;
+
+    // init.io's default Threaded instance has an unlimited concurrent_limit,
+    // so Group.concurrent below would spawn one thread per connection with
+    // no cap. Build our own with an explicit limit instead.
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    var threaded: Io.Threaded = .init(gpa, .{
+        .concurrent_limit = .limited(cpu_count * max_connections_per_cpu),
+    });
+    defer threaded.deinit();
+    const io = threaded.io();
 
     var address = try net.IpAddress.parseIp4("0.0.0.0", listen_port);
     var server = try address.listen(io, .{ .reuse_address = true });
