@@ -16,6 +16,12 @@ pub fn main(init: std.process.Init) !void {
     var server = try address.listen(io, .{ .reuse_address = true });
     defer server.deinit(io);
 
+    // Tasks release their resources as soon as each one finishes, not when
+    // the group as a whole is awaited, so it's fine to keep adding
+    // connections to this one long-lived group for the life of the process.
+    var connections: Io.Group = .init;
+    defer connections.await(io) catch {};
+
     std.log.info("szklana.pogoda listening on :{d}", .{listen_port});
 
     while (true) {
@@ -23,10 +29,21 @@ pub fn main(init: std.process.Init) !void {
             std.log.err("accept failed: {t}", .{err});
             continue;
         };
-        handleConnection(gpa, io, stream) catch |err| {
-            std.log.err("connection error: {t}", .{err});
+        // .concurrent (rather than .async) asks the Io implementation for
+        // real concurrency, so accept() keeps looping while this connection
+        // is blocked on I/O elsewhere. init.io defaults to std.Io.Threaded,
+        // which supports it; fall back to handling inline if it can't.
+        connections.concurrent(io, handleConnectionTask, .{ gpa, io, stream }) catch |err| {
+            std.log.err("spawn failed, handling inline: {t}", .{err});
+            handleConnectionTask(gpa, io, stream);
         };
     }
+}
+
+fn handleConnectionTask(gpa: std.mem.Allocator, io: Io, stream: net.Stream) void {
+    handleConnection(gpa, io, stream) catch |err| {
+        std.log.err("connection error: {t}", .{err});
+    };
 }
 
 fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream) !void {
