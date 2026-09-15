@@ -15,6 +15,7 @@ const default_max_body_bytes: usize = 16 * 1024;
 const default_max_connections_per_cpu: usize = 4;
 
 const index_html = @embedFile("web/index.html");
+const style_css = @embedFile("web/98.css");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -132,6 +133,17 @@ fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, max_b
             .keep_alive = false,
             .extra_headers = &.{
                 .{ .name = "content-type", .value = "text/html; charset=utf-8" },
+            },
+        });
+        return;
+    }
+
+    if (method == .GET and std.mem.eql(u8, target, "/98.css")) {
+        try request.respond(style_css, .{
+            .status = .ok,
+            .keep_alive = false,
+            .extra_headers = &.{
+                .{ .name = "content-type", .value = "text/css; charset=utf-8" },
             },
         });
         return;

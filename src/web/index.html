@@ -4,32 +4,35 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>szklana.pogoda</title>
+  <link rel="stylesheet" href="/98.css" />
   <style>
     body {
-      font-family: system-ui, sans-serif;
-      max-width: 32rem;
-      margin: 4rem auto;
-      padding: 0 1rem;
-      color: #1a1a1a;
+      background: #008080;
+      min-height: 100vh;
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding-top: 4rem;
     }
-    button {
-      font: inherit;
-      padding: 0.5rem 1rem;
-      cursor: pointer;
-    }
-    #pong {
-      margin-top: 1rem;
-      font-size: 1.5rem;
+    .window {
+      width: 320px;
     }
   </style>
 </head>
 <body>
-  <h1>szklana.pogoda</h1>
-  <p>Hello world portalu. Backend odpowiada na ping:</p>
-
-  <button id="ping-button">Ping</button>
-
-  <div id="pong"></div>
+  <div class="window">
+    <div class="title-bar">
+      <div class="title-bar-text">szklana.pogoda</div>
+    </div>
+    <div class="window-body">
+      <p>Hello world portalu. Backend odpowiada na ping:</p>
+      <button id="ping-button">Ping</button>
+    </div>
+    <div class="status-bar">
+      <p class="status-bar-field" id="pong">gotowy</p>
+    </div>
+  </div>
 
   <script>
     const button = document.getElementById("ping-button");
