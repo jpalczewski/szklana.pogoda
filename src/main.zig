@@ -3,17 +3,27 @@ const http = std.http;
 const Io = std.Io;
 const net = Io.net;
 
-const listen_port: u16 = 8080;
-const max_body_bytes: usize = 16 * 1024;
+// Defaults; every one of these is overridable via an environment variable
+// of the same name (see envInt/envStr below), so the server can be tuned
+// without a rebuild.
+const default_port: u16 = 8080;
+const default_host = "0.0.0.0";
+const default_max_body_bytes: usize = 16 * 1024;
 // Connections are I/O-bound (mostly waiting on the network), so allowing
 // several per CPU core keeps throughput up without letting an unbounded
 // number of 16 MiB thread stacks pile up under a connection flood.
-const max_connections_per_cpu: usize = 4;
+const default_max_connections_per_cpu: usize = 4;
 
 const index_html = @embedFile("web/index.html");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
+    const environ = init.environ_map;
+
+    const host = envStr(environ, "HOST", default_host);
+    const port = try envInt(u16, environ, "PORT", default_port);
+    const max_body_bytes = try envInt(usize, environ, "MAX_BODY_BYTES", default_max_body_bytes);
+    const max_connections_per_cpu = try envInt(usize, environ, "MAX_CONNECTIONS_PER_CPU", default_max_connections_per_cpu);
 
     // init.io's default Threaded instance has an unlimited concurrent_limit,
     // so Group.concurrent below would spawn one thread per connection with
@@ -25,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var address = try net.IpAddress.parseIp4("0.0.0.0", listen_port);
+    var address = try net.IpAddress.parseIp4(host, port);
     var server = try address.listen(io, .{ .reuse_address = true });
     defer server.deinit(io);
 
@@ -35,7 +45,7 @@ pub fn main(init: std.process.Init) !void {
     var connections: Io.Group = .init;
     defer connections.await(io) catch {};
 
-    std.log.info("szklana.pogoda listening on :{d}", .{listen_port});
+    std.log.info("szklana.pogoda listening on {s}:{d}", .{ host, port });
 
     while (true) {
         const stream = server.accept(io) catch |err| {
@@ -46,20 +56,35 @@ pub fn main(init: std.process.Init) !void {
         // real concurrency, so accept() keeps looping while this connection
         // is blocked on I/O elsewhere. init.io defaults to std.Io.Threaded,
         // which supports it; fall back to handling inline if it can't.
-        connections.concurrent(io, handleConnectionTask, .{ gpa, io, stream }) catch |err| {
+        connections.concurrent(io, handleConnectionTask, .{ gpa, io, stream, max_body_bytes }) catch |err| {
             std.log.err("spawn failed, handling inline: {t}", .{err});
-            handleConnectionTask(gpa, io, stream);
+            handleConnectionTask(gpa, io, stream, max_body_bytes);
         };
     }
 }
 
-fn handleConnectionTask(gpa: std.mem.Allocator, io: Io, stream: net.Stream) void {
-    handleConnection(gpa, io, stream) catch |err| {
+/// Reads `name` from the environment as an integer, falling back to
+/// `default` when unset. An invalid value is a startup-config error, not
+/// silently ignored.
+fn envInt(comptime T: type, environ: *const std.process.Environ.Map, name: []const u8, default: T) !T {
+    const raw = environ.get(name) orelse return default;
+    return std.fmt.parseInt(T, raw, 10) catch |err| {
+        std.log.err("invalid {s}=\"{s}\": {t}", .{ name, raw, err });
+        return err;
+    };
+}
+
+fn envStr(environ: *const std.process.Environ.Map, name: []const u8, default: []const u8) []const u8 {
+    return environ.get(name) orelse default;
+}
+
+fn handleConnectionTask(gpa: std.mem.Allocator, io: Io, stream: net.Stream, max_body_bytes: usize) void {
+    handleConnection(gpa, io, stream, max_body_bytes) catch |err| {
         std.log.err("connection error: {t}", .{err});
     };
 }
 
-fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream) !void {
+fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, max_body_bytes: usize) !void {
     var stream = stream_in;
     defer stream.close(io);
 
