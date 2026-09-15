@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>szklana.pogoda</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 32rem;
+      margin: 4rem auto;
+      padding: 0 1rem;
+      color: #1a1a1a;
+    }
+    button {
+      font: inherit;
+      padding: 0.5rem 1rem;
+      cursor: pointer;
+    }
+    #pong {
+      margin-top: 1rem;
+      font-size: 1.5rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>szklana.pogoda</h1>
+  <p>Hello world portalu. Backend odpowiada na ping:</p>
+
+  <button id="ping-button">Ping</button>
+
+  <div id="pong"></div>
+
+  <script>
+    const button = document.getElementById("ping-button");
+    const pong = document.getElementById("pong");
+
+    button.addEventListener("click", async () => {
+      pong.textContent = "...";
+      try {
+        const response = await fetch("/api/ping", { method: "POST" });
+        if (!response.ok) {
+          pong.textContent = `blad: HTTP ${response.status}`;
+          return;
+        }
+        pong.textContent = await response.text();
+      } catch (err) {
+        console.error("ping failed", err);
+        pong.textContent = "blad polaczenia";
+      }
+    });
+  </script>
+</body>
+</html>
