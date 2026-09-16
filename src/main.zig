@@ -25,6 +25,7 @@ comptime {
     _ = warnings.localNow;
     _ = warnings.warsawOffsetSeconds;
     _ = weather_updater.run;
+    _ = weather_updater.runWarnings;
 }
 
 pub const std_options: std.Options = .{
@@ -40,6 +41,7 @@ const Config = struct {
     trust_proxy: bool = false,
     database_path: []const u8 = "weather.db",
     imgw_interval_seconds: u64 = 10 * 60,
+    imgw_warnings_interval_seconds: u64 = 5 * 60,
 
     // The host borrows storage from environ, which must outlive this config.
     fn from_env(environ: *const std.process.Environ.Map) !Config {
@@ -53,6 +55,7 @@ const Config = struct {
             .trust_proxy = try envBool(environ, "TRUST_PROXY", defaults.trust_proxy),
             .database_path = environ.get("DATABASE_PATH") orelse defaults.database_path,
             .imgw_interval_seconds = try envInt(u64, environ, "IMGW_INTERVAL_SECONDS", defaults.imgw_interval_seconds),
+            .imgw_warnings_interval_seconds = try envInt(u64, environ, "IMGW_WARNINGS_INTERVAL_SECONDS", defaults.imgw_warnings_interval_seconds),
         };
         try config.validate();
         return config;
@@ -61,6 +64,7 @@ const Config = struct {
     fn validate(self: Config) !void {
         if (self.max_connections_per_cpu == 0) return error.InvalidMaxConnectionsPerCpu;
         if (self.imgw_interval_seconds == 0) return error.InvalidImgwInterval;
+        if (self.imgw_warnings_interval_seconds == 0) return error.InvalidImgwWarningsInterval;
     }
 
     fn concurrent_limit(self: Config, cpu_count: usize) !usize {
@@ -147,6 +151,7 @@ pub fn main(init: std.process.Init) !void {
     try listeners.concurrent(io, server.serve, .{ gpa, io, &app_listener_config, &connections });
     try listeners.concurrent(io, server.serve, .{ gpa, io, &metrics_listener_config, &connections });
     try connections.concurrent(io, weather_updater.run, .{ gpa, io, &observations, weather_updater.default_url, config.imgw_interval_seconds });
+    try connections.concurrent(io, weather_updater.runWarnings, .{ gpa, io, &observations, config.imgw_warnings_interval_seconds });
     try listeners.await(io);
 }
 
@@ -185,6 +190,7 @@ test "config reads environment overrides" {
     try environ.put("MAX_CONNECTIONS_PER_CPU", "8");
     try environ.put("TRUST_PROXY", "TrUe");
     try environ.put("DATABASE_PATH", "var/weather.db");
+    try environ.put("IMGW_WARNINGS_INTERVAL_SECONDS", "120");
 
     const config = try Config.from_env(&environ);
     try std.testing.expectEqualDeep(Config{
@@ -195,6 +201,7 @@ test "config reads environment overrides" {
         .max_connections_per_cpu = 8,
         .trust_proxy = true,
         .database_path = "var/weather.db",
+        .imgw_warnings_interval_seconds = 120,
     }, config);
     try std.testing.expectEqual(@as(usize, 26), try config.concurrent_limit(3));
 
@@ -207,6 +214,13 @@ test "config rejects zero connections per CPU" {
     defer environ.deinit();
     try environ.put("MAX_CONNECTIONS_PER_CPU", "0");
     try std.testing.expectError(error.InvalidMaxConnectionsPerCpu, Config.from_env(&environ));
+}
+
+test "config rejects zero IMGW warnings interval" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    try environ.put("IMGW_WARNINGS_INTERVAL_SECONDS", "0");
+    try std.testing.expectError(error.InvalidImgwWarningsInterval, Config.from_env(&environ));
 }
 
 test "config rejects zero IMGW interval" {
