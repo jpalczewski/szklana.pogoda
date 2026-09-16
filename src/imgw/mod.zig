@@ -12,10 +12,14 @@ pub const http = @import("http.zig");
 pub const records = @import("records.zig");
 pub const product = @import("product.zig");
 
-/// Measurement products. Synop and meteo both yield weather observations.
+/// Measurement products. Synop and meteo both yield weather observations and
+/// share their field mapping through `observation_fields`.
 pub const synop = @import("synop.zig");
 pub const meteo = @import("meteo.zig");
 pub const hydro = @import("hydro.zig");
+
+/// The measurement fields synop and meteo publish under different names.
+pub const observation_fields = @import("observation_fields.zig");
 
 /// Warning products, normalized into the shared `warnings` domain model.
 pub const warnings = struct {

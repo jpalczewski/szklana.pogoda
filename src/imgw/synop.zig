@@ -1,6 +1,7 @@
 const std = @import("std");
 const value = @import("value.zig");
 const product = @import("product.zig");
+const fields = @import("observation_fields.zig");
 const model = @import("../weather/model.zig");
 
 pub const Error = value.Error;
@@ -33,31 +34,17 @@ pub const parse = Source.parse;
 pub const fetch = Source.fetch;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.Observation {
-    const temperature = try value.optionalFloat(raw.temperatura);
-    const wind_speed = try value.optionalFloat(raw.predkosc_wiatru);
-    const wind_direction = try value.optionalInt(raw.kierunek_wiatru);
-    const humidity = try value.optionalFloat(raw.wilgotnosc_wzgledna);
-    const precipitation = try value.optionalFloat(raw.suma_opadu);
-    const pressure = try value.optionalFloat(raw.cisnienie);
-
-    const station_id = try value.presentText(allocator, raw.id_stacji);
-    errdefer allocator.free(station_id);
-    const station_name = try value.presentText(allocator, raw.stacja);
-    errdefer allocator.free(station_name);
     const observed_at = try observedAt(allocator, raw.data_pomiaru, raw.godzina_pomiaru);
-    errdefer allocator.free(observed_at);
-
-    return .{
-        .station_id = station_id,
-        .station_name = station_name,
-        .observed_at = observed_at,
-        .temperature_c = temperature,
-        .wind_speed_m_s = wind_speed,
-        .wind_direction_deg = wind_direction,
-        .relative_humidity_percent = humidity,
-        .precipitation_mm = precipitation,
-        .pressure_hpa = pressure,
-    };
+    return fields.decode(allocator, .{
+        .station_id = raw.id_stacji,
+        .station_name = raw.stacja,
+        .temperature = raw.temperatura,
+        .wind_speed = raw.predkosc_wiatru,
+        .wind_direction = raw.kierunek_wiatru,
+        .humidity = raw.wilgotnosc_wzgledna,
+        .precipitation = raw.suma_opadu,
+        .pressure = raw.cisnienie,
+    }, observed_at);
 }
 
 /// The synoptic product splits date and hour; the store keeps the ISO-like

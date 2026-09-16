@@ -1,6 +1,7 @@
 const std = @import("std");
 const value = @import("value.zig");
 const product = @import("product.zig");
+const fields = @import("observation_fields.zig");
 const model = @import("../weather/model.zig");
 
 pub const Error = value.Error;
@@ -32,24 +33,18 @@ pub const parse = Source.parse;
 pub const fetch = Source.fetch;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.Observation {
-    const station_id = try value.presentText(allocator, raw.kod_stacji);
-    errdefer allocator.free(station_id);
-    const station_name = try value.presentText(allocator, raw.nazwa_stacji);
-    errdefer allocator.free(station_name);
     const source_time = raw.temperatura_powietrza_data orelse raw.wilgotnosc_wzgledna_data orelse raw.opad_10min_data orelse return error.InvalidData;
     const observed_at = try value.utcTimestamp(allocator, source_time);
-    errdefer allocator.free(observed_at);
-    return .{
-        .station_id = station_id,
-        .station_name = station_name,
-        .observed_at = observed_at,
-        .temperature_c = try value.optionalFloat(raw.temperatura_powietrza),
-        .wind_speed_m_s = try value.optionalFloat(raw.wiatr_srednia_predkosc),
-        .wind_direction_deg = try value.optionalInt(raw.wiatr_kierunek),
-        .relative_humidity_percent = try value.optionalFloat(raw.wilgotnosc_wzgledna),
-        .precipitation_mm = try value.optionalFloat(raw.opad_10min),
-        .pressure_hpa = null,
-    };
+    // The meteo product publishes no pressure.
+    return fields.decode(allocator, .{
+        .station_id = raw.kod_stacji,
+        .station_name = raw.nazwa_stacji,
+        .temperature = raw.temperatura_powietrza,
+        .wind_speed = raw.wiatr_srednia_predkosc,
+        .wind_direction = raw.wiatr_kierunek,
+        .humidity = raw.wilgotnosc_wzgledna,
+        .precipitation = raw.opad_10min,
+    }, observed_at);
 }
 
 test "parses meteo records using the first available timestamp" {
