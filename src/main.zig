@@ -13,6 +13,22 @@ const imgw = @import("imgw/mod.zig");
 const weather = @import("weather/mod.zig");
 const warnings = @import("warnings.zig");
 
+/// Every module of the server, named once so the analysis below and the test
+/// collection at the end of this file cannot drift apart.
+const modules = .{
+    @import("app_log.zig"),
+    @import("metrics.zig"),
+    @import("process_memory.zig"),
+    @import("router.zig"),
+    @import("server.zig"),
+    @import("warnings.zig"),
+    @import("routes/api.zig"),
+    @import("routes/pages.zig"),
+    @import("routes/metrics.zig"),
+    @import("imgw/mod.zig"),
+    @import("weather/mod.zig"),
+};
+
 /// Forces the semantic analyzer over every function of a module, so production
 /// builds keep checking code that no call path reaches. Referencing a
 /// declaration as a value is not enough for that; its address is.
@@ -30,9 +46,14 @@ fn analyzeDecls(comptime T: type) void {
 }
 
 comptime {
-    analyzeDecls(imgw);
-    analyzeDecls(weather);
-    analyzeDecls(warnings);
+    for (modules) |module| analyzeDecls(module);
+}
+
+// `zig build test` only collects the tests of files reached from a test context,
+// so every module has to be referenced here. Without it a failing router or API
+// test does not fail the build.
+test {
+    inline for (modules) |module| _ = module;
 }
 
 pub const std_options: std.Options = .{

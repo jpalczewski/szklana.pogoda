@@ -221,6 +221,7 @@ test "memory endpoint only allows GET" {
         .body = null,
     };
     const response = try router.dispatch(&routes, &app, &request);
+    defer std.testing.allocator.free(response.body);
     defer std.testing.allocator.free(response.allow.?);
     try std.testing.expectEqual(.method_not_allowed, response.status);
     try std.testing.expectEqualStrings("GET", response.allow.?);
@@ -260,7 +261,11 @@ test "weather history returns observations for one station" {
 }
 
 test "weather history requires a station ID" {
-    var app: router.App = .{ .max_body_bytes = 16 };
+    // A handler reaches the query check only once it has a store, so the test
+    // provides an empty one.
+    var store = try weather.Store.initMemory();
+    defer store.deinit();
+    var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store };
     var request: router.RequestContext = .{
         .allocator = std.testing.allocator,
         .method = .GET,
@@ -274,7 +279,9 @@ test "weather history requires a station ID" {
 }
 
 test "hydro history requires a station ID" {
-    var app: router.App = .{ .max_body_bytes = 16 };
+    var store = try weather.Store.initMemory();
+    defer store.deinit();
+    var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store };
     var request: router.RequestContext = .{
         .allocator = std.testing.allocator,
         .method = .GET,
