@@ -75,6 +75,36 @@ const warning_area_select =
 ;
 const warning_area_order = "\nORDER BY a.source ASC, a.warning_id ASC, a.revision ASC";
 
+/// The columns of `weather_observations` in table order. The insert, the
+/// history select, the placeholders and the upsert assignments are all derived
+/// from this list, so they cannot drift apart.
+const observation_column_names = [_][]const u8{
+    "station_id",                "station_name",     "observed_at",
+    "temperature_c",             "wind_speed_m_s",   "wind_direction_deg",
+    "relative_humidity_percent", "precipitation_mm", "pressure_hpa",
+};
+const observation_columns = joinColumns(&observation_column_names);
+const observation_placeholders = placeholders(observation_column_names.len);
+const observation_upsert = upsertAssignments(&observation_column_names);
+
+/// The columns of `hydro_observations` in table order.
+const hydro_column_names = [_][]const u8{
+    "station_id",                        "station_name",
+    "river",                             "voivodeship",
+    "longitude",                         "latitude",
+    "founded_year",                      "gauge_zero_m",
+    "river_km",                          "warning_level_cm",
+    "alarm_level_cm",                    "water_level_cm",
+    "water_level_observed_at",           "water_temperature_c",
+    "water_temperature_observed_at",     "flow_m3_s",
+    "flow_observed_at",                  "ice_phenomenon",
+    "ice_phenomenon_observed_at",        "overgrowth_phenomenon",
+    "overgrowth_phenomenon_observed_at", "water_level_status",
+};
+const hydro_columns = joinColumns(&hydro_column_names);
+const hydro_placeholders = placeholders(hydro_column_names.len);
+const hydro_upsert = upsertAssignments(&hydro_column_names);
+
 pub const Store = struct {
     db: sqlite.Db,
 
@@ -110,19 +140,9 @@ pub const Store = struct {
 
     pub fn record(self: *Store, observation: model.Observation) !void {
         try self.db.exec(
-            \\INSERT INTO weather_observations (
-            \\    station_id, station_name, observed_at, temperature_c, wind_speed_m_s,
-            \\    wind_direction_deg, relative_humidity_percent, precipitation_mm, pressure_hpa
-            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            \\ON CONFLICT (station_id, observed_at) DO UPDATE SET
-            \\    station_name = excluded.station_name,
-            \\    temperature_c = excluded.temperature_c,
-            \\    wind_speed_m_s = excluded.wind_speed_m_s,
-            \\    wind_direction_deg = excluded.wind_direction_deg,
-            \\    relative_humidity_percent = excluded.relative_humidity_percent,
-            \\    precipitation_mm = excluded.precipitation_mm,
-            \\    pressure_hpa = excluded.pressure_hpa
-        ,
+            "INSERT INTO weather_observations (" ++ observation_columns ++ ")\n" ++
+                "VALUES (" ++ observation_placeholders ++ ")\n" ++
+                "ON CONFLICT (station_id, observed_at) DO UPDATE SET " ++ observation_upsert,
             .{},
             .{
                 .station_id = observation.station_id,
@@ -140,11 +160,10 @@ pub const Store = struct {
 
     pub fn history(self: *Store, allocator: std.mem.Allocator, station_id: []const u8, since: []const u8) ![]model.Observation {
         var statement = try self.db.prepare(
-            \\SELECT station_id, station_name, observed_at, temperature_c, wind_speed_m_s,
-            \\       wind_direction_deg, relative_humidity_percent, precipitation_mm, pressure_hpa
-            \\FROM weather_observations
-            \\WHERE station_id = ? AND observed_at >= ?
-            \\ORDER BY observed_at ASC
+            "SELECT " ++ observation_columns ++ "\n" ++
+                "FROM weather_observations\n" ++
+                "WHERE station_id = ? AND observed_at >= ?\n" ++
+                "ORDER BY observed_at ASC",
         );
         defer statement.deinit();
         return statement.all(model.Observation, allocator, .{}, .{ .station_id = station_id, .since = since });
@@ -162,19 +181,16 @@ pub const Store = struct {
     }
 
     pub fn recordHydro(self: *Store, item: model.HydroObservation) !void {
-        try self.db.exec(
-            \\INSERT INTO hydro_observations (station_id, station_name, river, voivodeship, longitude, latitude, founded_year, gauge_zero_m, river_km, warning_level_cm, alarm_level_cm, water_level_cm, water_level_observed_at, water_temperature_c, water_temperature_observed_at, flow_m3_s, flow_observed_at, ice_phenomenon, ice_phenomenon_observed_at, overgrowth_phenomenon, overgrowth_phenomenon_observed_at, water_level_status)
-            \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            \\ON CONFLICT (station_id, water_level_observed_at) DO UPDATE SET
-            \\ station_name=excluded.station_name, river=excluded.river, voivodeship=excluded.voivodeship, longitude=excluded.longitude, latitude=excluded.latitude, founded_year=excluded.founded_year, gauge_zero_m=excluded.gauge_zero_m, river_km=excluded.river_km, warning_level_cm=excluded.warning_level_cm, alarm_level_cm=excluded.alarm_level_cm, water_level_cm=excluded.water_level_cm, water_temperature_c=excluded.water_temperature_c, water_temperature_observed_at=excluded.water_temperature_observed_at, flow_m3_s=excluded.flow_m3_s, flow_observed_at=excluded.flow_observed_at, ice_phenomenon=excluded.ice_phenomenon, ice_phenomenon_observed_at=excluded.ice_phenomenon_observed_at, overgrowth_phenomenon=excluded.overgrowth_phenomenon, overgrowth_phenomenon_observed_at=excluded.overgrowth_phenomenon_observed_at, water_level_status=excluded.water_level_status
-        , .{}, .{ .station_id = item.station_id, .station_name = item.station_name, .river = item.river, .voivodeship = item.voivodeship, .longitude = item.longitude, .latitude = item.latitude, .founded_year = item.founded_year, .gauge_zero_m = item.gauge_zero_m, .river_km = item.river_km, .warning_level_cm = item.warning_level_cm, .alarm_level_cm = item.alarm_level_cm, .water_level_cm = item.water_level_cm, .water_level_observed_at = item.water_level_observed_at, .water_temperature_c = item.water_temperature_c, .water_temperature_observed_at = item.water_temperature_observed_at, .flow_m3_s = item.flow_m3_s, .flow_observed_at = item.flow_observed_at, .ice_phenomenon = item.ice_phenomenon, .ice_phenomenon_observed_at = item.ice_phenomenon_observed_at, .overgrowth_phenomenon = item.overgrowth_phenomenon, .overgrowth_phenomenon_observed_at = item.overgrowth_phenomenon_observed_at, .water_level_status = item.water_level_status });
+        try self.db.exec("INSERT INTO hydro_observations (" ++ hydro_columns ++ ")\n" ++
+            "VALUES (" ++ hydro_placeholders ++ ")\n" ++
+            "ON CONFLICT (station_id, water_level_observed_at) DO UPDATE SET " ++ hydro_upsert, .{}, .{ .station_id = item.station_id, .station_name = item.station_name, .river = item.river, .voivodeship = item.voivodeship, .longitude = item.longitude, .latitude = item.latitude, .founded_year = item.founded_year, .gauge_zero_m = item.gauge_zero_m, .river_km = item.river_km, .warning_level_cm = item.warning_level_cm, .alarm_level_cm = item.alarm_level_cm, .water_level_cm = item.water_level_cm, .water_level_observed_at = item.water_level_observed_at, .water_temperature_c = item.water_temperature_c, .water_temperature_observed_at = item.water_temperature_observed_at, .flow_m3_s = item.flow_m3_s, .flow_observed_at = item.flow_observed_at, .ice_phenomenon = item.ice_phenomenon, .ice_phenomenon_observed_at = item.ice_phenomenon_observed_at, .overgrowth_phenomenon = item.overgrowth_phenomenon, .overgrowth_phenomenon_observed_at = item.overgrowth_phenomenon_observed_at, .water_level_status = item.water_level_status });
     }
 
     pub fn hydroStations(self: *Store, allocator: std.mem.Allocator) ![]model.HydroStation {
         var statement = try self.db.prepare(
-            \\SELECT station_id, station_name, river, voivodeship, longitude, latitude, founded_year, gauge_zero_m, river_km, warning_level_cm, alarm_level_cm, water_level_cm, water_level_observed_at, water_temperature_c, water_temperature_observed_at, flow_m3_s, flow_observed_at, ice_phenomenon, ice_phenomenon_observed_at, overgrowth_phenomenon, overgrowth_phenomenon_observed_at, water_level_status
-            \\FROM hydro_observations
-            \\WHERE water_level_observed_at = (SELECT MAX(h.water_level_observed_at) FROM hydro_observations h WHERE h.station_id = hydro_observations.station_id)
+            "SELECT " ++ hydro_columns ++ "\n" ++
+                "FROM hydro_observations\n" ++
+                "WHERE water_level_observed_at = (SELECT MAX(h.water_level_observed_at) FROM hydro_observations h WHERE h.station_id = hydro_observations.station_id)",
         );
         defer statement.deinit();
         return statement.all(model.HydroStation, allocator, .{}, .{});
@@ -182,8 +198,8 @@ pub const Store = struct {
 
     pub fn hydroHistory(self: *Store, allocator: std.mem.Allocator, station_id: []const u8, since: []const u8) ![]model.HydroObservation {
         var statement = try self.db.prepare(
-            \\SELECT station_id, station_name, river, voivodeship, longitude, latitude, founded_year, gauge_zero_m, river_km, warning_level_cm, alarm_level_cm, water_level_cm, water_level_observed_at, water_temperature_c, water_temperature_observed_at, flow_m3_s, flow_observed_at, ice_phenomenon, ice_phenomenon_observed_at, overgrowth_phenomenon, overgrowth_phenomenon_observed_at, water_level_status
-            \\FROM hydro_observations WHERE station_id = ? AND water_level_observed_at >= ? ORDER BY water_level_observed_at ASC
+            "SELECT " ++ hydro_columns ++ "\n" ++
+                "FROM hydro_observations WHERE station_id = ? AND water_level_observed_at >= ? ORDER BY water_level_observed_at ASC",
         );
         defer statement.deinit();
         return statement.all(model.HydroObservation, allocator, .{}, .{ .station_id = station_id, .since = since });
@@ -464,6 +480,52 @@ fn warningSource(value: []const u8) !WarningSource {
     return WarningSource.fromQuery(value) orelse error.InvalidData;
 }
 
+/// Comma-joins column names for an insert or select list. Every caller needs
+/// the result as a compile-time SQL constant, so these builders are comptime
+/// only.
+fn joinColumns(comptime names: []const []const u8) []const u8 {
+    var text: []const u8 = "";
+    for (names, 0..) |name, index| {
+        if (index != 0) text = text ++ ", ";
+        text = text ++ name;
+    }
+    return text;
+}
+
+fn placeholders(comptime count: usize) []const u8 {
+    var text: []const u8 = "";
+    for (0..count) |index| {
+        if (index != 0) text = text ++ ", ";
+        text = text ++ "?";
+    }
+    return text;
+}
+
+/// Builds the `column = excluded.column` assignments of an upsert from the same
+/// column list the insert uses.
+fn upsertAssignments(comptime names: []const []const u8) []const u8 {
+    var text: []const u8 = "";
+    for (names, 0..) |name, index| {
+        if (index != 0) text = text ++ ", ";
+        text = text ++ name ++ " = excluded." ++ name;
+    }
+    return text;
+}
+
+/// Container-level so the comptime builders can see the names.
+const join_fixture = [_][]const u8{ "a", "b" };
+const upsert_fixture = [_][]const u8{ "a", "b" };
+
+test "column lists are derived from one source" {
+    try std.testing.expectEqualStrings("a, b", comptime joinColumns(&join_fixture));
+    try std.testing.expectEqualStrings("?, ?, ?", comptime placeholders(3));
+    try std.testing.expectEqualStrings("a = excluded.a, b = excluded.b", comptime upsertAssignments(&upsert_fixture));
+    // The placeholder count has to follow the column list, or an insert binds
+    // the wrong number of values.
+    try std.testing.expectEqual(hydro_column_names.len, std.mem.count(u8, hydro_placeholders, "?"));
+    try std.testing.expectEqual(observation_column_names.len, std.mem.count(u8, observation_placeholders, "?"));
+}
+
 fn matchesWarning(row: AreaRow, item: Warning) bool {
     return std.mem.eql(u8, row.source, @tagName(item.source)) and
         std.mem.eql(u8, row.warning_id, item.warning_id) and
@@ -671,4 +733,63 @@ test "active warnings expire, filter by TERYT and stay source separated" {
     try std.testing.expectEqual(@as(usize, 1), hydro.len);
     try std.testing.expectEqualStrings("Z_P_WP_1856", hydro[0].areas[0].basin_code.?);
     try std.testing.expectEqual(@as(?i16, -1), hydro[0].severity);
+}
+
+fn testHydroObservation() model.HydroObservation {
+    return .{
+        .station_id = "151140030",
+        .station_name = "Przewoźniki",
+        .river = "Skroda",
+        .voivodeship = "lubuskie",
+        .longitude = 14.8217,
+        .latitude = 51.5253,
+        .founded_year = 1954,
+        .gauge_zero_m = 100.5,
+        .river_km = 12.3,
+        .warning_level_cm = 300,
+        .alarm_level_cm = 340,
+        .water_level_cm = 310,
+        .water_level_observed_at = "2026-09-16 07:50:00",
+        .water_temperature_c = 12.5,
+        .water_temperature_observed_at = "2026-09-16 07:50:00",
+        .flow_m3_s = 0.11,
+        .flow_observed_at = "2026-09-16 07:50:00",
+        .ice_phenomenon = null,
+        .ice_phenomenon_observed_at = null,
+        .overgrowth_phenomenon = null,
+        .overgrowth_phenomenon_observed_at = null,
+        .water_level_status = "warning",
+    };
+}
+
+test "stores gauge readings and returns the latest one plus their history" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+
+    try store.recordHydro(testHydroObservation());
+
+    var newer = testHydroObservation();
+    newer.water_level_observed_at = "2026-09-16 08:50:00";
+    newer.water_level_cm = 320;
+    try store.recordHydro(newer);
+
+    const stations = try store.hydroStations(std.testing.allocator);
+    defer model.deinitHydro(std.testing.allocator, stations);
+    try std.testing.expectEqual(@as(usize, 1), stations.len);
+    try std.testing.expectEqualStrings("2026-09-16 08:50:00", stations[0].water_level_observed_at.?);
+    try std.testing.expectApproxEqAbs(@as(f64, 320), stations[0].water_level_cm.?, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.11), stations[0].flow_m3_s.?, 0.001);
+    try std.testing.expectEqualStrings("Skroda", stations[0].river);
+
+    const history = try store.hydroHistory(std.testing.allocator, "151140030", "2026-09-16 00:00:00");
+    defer model.deinitHydro(std.testing.allocator, history);
+    try std.testing.expectEqual(@as(usize, 2), history.len);
+    try std.testing.expectEqualStrings("2026-09-16 07:50:00", history[0].water_level_observed_at.?);
+
+    // Re-recording the same reading updates it in place instead of adding a row.
+    try store.recordHydro(testHydroObservation());
+    const unchanged = try store.hydroHistory(std.testing.allocator, "151140030", "2026-09-16 00:00:00");
+    defer model.deinitHydro(std.testing.allocator, unchanged);
+    try std.testing.expectEqual(@as(usize, 2), unchanged.len);
+    try std.testing.expectApproxEqAbs(@as(f64, 310), unchanged[0].water_level_cm.?, 0.001);
 }
