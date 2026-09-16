@@ -6,6 +6,8 @@ This is a small Zig HTTP server. Application startup, environment-based configur
 
 Routing primitives (`Route`, `RequestContext`, `Response`, errors, and bounded request bodies) belong in `src/router.zig`. Put endpoint handlers in `src/routes/`: use `api.zig` for `/api/*` handlers and `pages.zig` for HTML or static assets. Browser assets are embedded at build time from `src/web/`.
 
+IMGW public data lives in the `src/imgw/` module. Each product file owns its endpoint, raw record shape, and mapping into the application model, while `value.zig` (string-value coercion), `http.zig` (transport), and `records.zig` (JSON-array decoding) hold the shared code. Add a product by creating one file and exposing it from `imgw/mod.zig`; the `warnings` domain model stays in `src/warnings.zig`. The updater polls products and writes them to the store.
+
 Add a route by creating a handler with the `router.Handler` signature and registering it in the `routes` array in `src/main.zig`. Keep route matching exact; do not introduce path parameters or wildcard routing without a concrete use case.
 
 ## Build, Test, and Development Commands
@@ -21,6 +23,8 @@ The server accepts `HOST`, `PORT`, `MAX_BODY_BYTES`, and `MAX_CONNECTIONS_PER_CP
 ## Coding Style & Naming Conventions
 
 Use `zig fmt`; do not hand-maintain formatting. Follow Zig conventions: four-space indentation, `snake_case` for functions and local variables, `PascalCase` for types, and lowercase filenames such as `routes/api.zig`.
+
+Name every Zig identifier in English: variables, parameters, functions, types, and struct fields. The deliberate exception is the private wire structs in `src/imgw/` (`Raw`, `RawArea`, …), whose fields must be spelled exactly like IMGW's Polish JSON keys because `std.json` derives keys from field names. Keep those structs thin and map them into the English-named application model within the same file; Polish may otherwise appear only inside string literals that are genuine IMGW field names, values, or test fixtures.
 
 Keep handlers small and return `router.Response` instead of writing directly to `std.http`. API responses and API errors use JSON; non-API missing routes use `text/plain`. Request body reads must go through `RequestContext.body` so `MAX_BODY_BYTES` remains enforced.
 
