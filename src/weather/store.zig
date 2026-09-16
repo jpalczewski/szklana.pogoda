@@ -1,6 +1,6 @@
 const std = @import("std");
 const sqlite = @import("sqlite");
-const warnings = @import("warnings.zig");
+const warnings = @import("../warnings.zig");
 
 pub const Warning = warnings.Warning;
 pub const WarningArea = warnings.Area;

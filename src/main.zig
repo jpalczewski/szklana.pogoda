@@ -9,10 +9,9 @@ const pages = @import("routes/pages.zig");
 const app_log = @import("app_log.zig");
 const metrics = @import("metrics.zig");
 const metrics_route = @import("routes/metrics.zig");
-const weather_store = @import("weather_store.zig");
 const imgw = @import("imgw/mod.zig");
+const weather = @import("weather/mod.zig");
 const warnings = @import("warnings.zig");
-const weather_updater = @import("weather_updater.zig");
 
 comptime {
     _ = imgw.synop.parse;
@@ -30,8 +29,8 @@ comptime {
     _ = imgw.records.decode;
     _ = warnings.localNow;
     _ = warnings.warsawOffsetSeconds;
-    _ = weather_updater.run;
-    _ = weather_updater.runWarnings;
+    _ = weather.updater.run;
+    _ = weather.updater.runWarnings;
 }
 
 pub const std_options: std.Options = .{
@@ -110,7 +109,7 @@ pub fn main(init: std.process.Init) !void {
     const config = try Config.from_env(init.environ_map);
     const database_path = try gpa.dupeZ(u8, config.database_path);
     defer gpa.free(database_path);
-    var observations = try weather_store.Store.initFile(database_path);
+    var observations = try weather.Store.initFile(database_path);
     defer observations.deinit();
 
     const cpu_count = std.Thread.getCpuCount() catch 1;
@@ -156,8 +155,8 @@ pub fn main(init: std.process.Init) !void {
 
     try listeners.concurrent(io, server.serve, .{ gpa, io, &app_listener_config, &connections });
     try listeners.concurrent(io, server.serve, .{ gpa, io, &metrics_listener_config, &connections });
-    try connections.concurrent(io, weather_updater.run, .{ gpa, io, &observations, config.imgw_interval_seconds });
-    try connections.concurrent(io, weather_updater.runWarnings, .{ gpa, io, &observations, config.imgw_warnings_interval_seconds });
+    try connections.concurrent(io, weather.updater.run, .{ gpa, io, &observations, config.imgw_interval_seconds });
+    try connections.concurrent(io, weather.updater.runWarnings, .{ gpa, io, &observations, config.imgw_warnings_interval_seconds });
     try listeners.await(io);
 }
 

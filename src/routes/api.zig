@@ -2,7 +2,7 @@ const std = @import("std");
 const router = @import("../router.zig");
 const process_memory = @import("../process_memory.zig");
 const warnings = @import("../warnings.zig");
-const weather_store = @import("../weather_store.zig");
+const weather = @import("../weather/mod.zig");
 
 pub fn ping(_: *router.App, request: *router.RequestContext) router.AppError!router.Response {
     return router.Response.jsonValue(request.allocator, .ok, .{ .status = "pong" });
@@ -26,7 +26,7 @@ pub fn weatherHistory(app: *router.App, request: *router.RequestContext) router.
         std.log.err("weather history unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather_store.Store.deinitHistory(request.allocator, observations);
+    defer weather.Store.deinitHistory(request.allocator, observations);
     return router.Response.jsonValue(request.allocator, .ok, .{
         .station_id = station_id,
         .observations = observations,
@@ -39,7 +39,7 @@ pub fn weatherStations(app: *router.App, request: *router.RequestContext) router
         std.log.err("weather stations unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather_store.Store.deinitStations(request.allocator, stations);
+    defer weather.Store.deinitStations(request.allocator, stations);
     return router.Response.jsonValue(request.allocator, .ok, .{ .stations = stations });
 }
 
@@ -49,7 +49,7 @@ pub fn hydroStations(app: *router.App, request: *router.RequestContext) router.A
         std.log.err("hydro stations unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather_store.Store.deinitHydro(request.allocator, stations);
+    defer weather.Store.deinitHydro(request.allocator, stations);
     return router.Response.jsonValue(request.allocator, .ok, .{ .stations = stations });
 }
 
@@ -62,13 +62,13 @@ pub fn hydroHistory(app: *router.App, request: *router.RequestContext) router.Ap
         std.log.err("hydro history unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather_store.Store.deinitHydro(request.allocator, observations);
+    defer weather.Store.deinitHydro(request.allocator, observations);
     return router.Response.jsonValue(request.allocator, .ok, .{ .station_id = station_id, .observations = observations });
 }
 
 const WarningQuery = struct {
     warning_id: ?[]const u8 = null,
-    source: ?weather_store.WarningSource = null,
+    source: ?weather.WarningSource = null,
     teryt: ?[]const u8 = null,
     since: ?[]const u8 = null,
 };
@@ -82,7 +82,7 @@ fn warningQuery(request: *router.RequestContext) router.AppError!WarningQuery {
         query.warning_id = value;
     }
     if (queryValue(request.query, "source")) |value| {
-        query.source = weather_store.WarningSource.fromQuery(value) orelse return error.BadRequest;
+        query.source = weather.WarningSource.fromQuery(value) orelse return error.BadRequest;
     }
     if (queryValue(request.query, "teryt")) |value| {
         if (!isTeryt(value)) return error.BadRequest;
@@ -128,7 +128,7 @@ pub fn warningsActive(app: *router.App, request: *router.RequestContext) router.
         std.log.err("warning query failed: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather_store.Store.deinitWarnings(request.allocator, items);
+    defer weather.Store.deinitWarnings(request.allocator, items);
     return router.Response.jsonValue(request.allocator, .ok, .{ .warnings = items });
 }
 
@@ -146,7 +146,7 @@ pub fn warningsHistory(app: *router.App, request: *router.RequestContext) router
         std.log.err("warning history unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather_store.Store.deinitWarnings(request.allocator, items);
+    defer weather.Store.deinitWarnings(request.allocator, items);
     return router.Response.jsonValue(request.allocator, .ok, .{ .warnings = items });
 }
 
@@ -161,7 +161,7 @@ pub fn warningsRevisions(app: *router.App, request: *router.RequestContext) rout
         std.log.err("warning revisions unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather_store.Store.deinitWarnings(request.allocator, items);
+    defer weather.Store.deinitWarnings(request.allocator, items);
     return router.Response.jsonValue(request.allocator, .ok, .{
         .source = source,
         .warning_id = warning_id,
@@ -232,7 +232,7 @@ test "memory endpoint only allows GET" {
 }
 
 test "weather history returns observations for one station" {
-    var store = try weather_store.Store.initMemory();
+    var store = try weather.Store.initMemory();
     defer store.deinit();
     try store.record(.{
         .station_id = "12424",
@@ -292,7 +292,7 @@ test "hydro history requires a station ID" {
 }
 
 test "weather stations returns city to station mapping" {
-    var store = try weather_store.Store.initMemory();
+    var store = try weather.Store.initMemory();
     defer store.deinit();
     try store.record(.{
         .station_id = "12424",
@@ -322,7 +322,7 @@ test "weather stations returns city to station mapping" {
     );
 }
 
-fn warningFixture() weather_store.Warning {
+fn warningFixture() weather.Warning {
     return .{
         .source = .meteo,
         .warning_id = "Sk1",
@@ -339,7 +339,7 @@ fn warningFixture() weather_store.Warning {
 }
 
 test "warnings endpoint returns the active set as JSON" {
-    var store = try weather_store.Store.initMemory();
+    var store = try weather.Store.initMemory();
     defer store.deinit();
     _ = try store.recordWarnings(&.{warningFixture()}, "2026-09-16 23:05:00");
 
@@ -367,7 +367,7 @@ test "warnings endpoint returns the active set as JSON" {
 }
 
 test "warnings endpoint filters by TERYT and reports an empty result" {
-    var store = try weather_store.Store.initMemory();
+    var store = try weather.Store.initMemory();
     defer store.deinit();
     _ = try store.recordWarnings(&.{warningFixture()}, "2026-09-16 23:05:00");
 
@@ -386,7 +386,7 @@ test "warnings endpoint filters by TERYT and reports an empty result" {
 }
 
 test "warnings endpoint rejects malformed query values" {
-    var store = try weather_store.Store.initMemory();
+    var store = try weather.Store.initMemory();
     defer store.deinit();
     var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store, .io = std.testing.io };
     var request: router.RequestContext = .{
@@ -410,7 +410,7 @@ test "warnings endpoint rejects malformed query values" {
 }
 
 test "warnings revisions require a source and an identifier" {
-    var store = try weather_store.Store.initMemory();
+    var store = try weather.Store.initMemory();
     defer store.deinit();
     _ = try store.recordWarnings(&.{warningFixture()}, "2026-09-16 23:05:00");
 
@@ -436,7 +436,7 @@ test "warnings revisions require a source and an identifier" {
 }
 
 test "warnings history keeps expired warnings" {
-    var store = try weather_store.Store.initMemory();
+    var store = try weather.Store.initMemory();
     defer store.deinit();
     var expired = warningFixture();
     expired.warning_id = "Sk0";

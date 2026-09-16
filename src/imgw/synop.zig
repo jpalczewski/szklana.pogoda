@@ -3,7 +3,7 @@ const Io = std.Io;
 const value = @import("value.zig");
 const http = @import("http.zig");
 const records = @import("records.zig");
-const weather_store = @import("../weather_store.zig");
+const weather_store = @import("../weather/store.zig");
 
 pub const Error = value.Error;
 

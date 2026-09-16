@@ -1,9 +1,9 @@
 const std = @import("std");
 const Io = std.Io;
 
-const imgw = @import("imgw/mod.zig");
-const warnings = @import("warnings.zig");
-const weather_store = @import("weather_store.zig");
+const imgw = @import("../imgw/mod.zig");
+const warnings = @import("../warnings.zig");
+const weather_store = @import("store.zig");
 
 /// Both measurement products normalize into `weather_store.Observation`, so
 /// only the fetch differs.

@@ -2,13 +2,13 @@ const std = @import("std");
 const http = std.http;
 const Io = std.Io;
 const metrics = @import("metrics.zig");
-const weather_store = @import("weather_store.zig");
+const weather = @import("weather/mod.zig");
 
 pub const App = struct {
     max_body_bytes: usize,
     trust_proxy: bool = false,
     metrics: ?*metrics.Registry = null,
-    weather_store: ?*weather_store.Store = null,
+    weather_store: ?*weather.Store = null,
     /// Wall clock used by handlers that need "now"; left null by tests that
     /// do not exercise time dependent paths.
     io: ?Io = null,
