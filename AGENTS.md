@@ -6,9 +6,11 @@ This is a small Zig HTTP server. Application startup, environment-based configur
 
 Routing primitives (`Route`, `RequestContext`, `Response`, errors, and bounded request bodies) belong in `src/router.zig`. Put endpoint handlers in `src/routes/`: use `api.zig` for `/api/*` handlers and `pages.zig` for HTML or static assets. Browser assets are embedded at build time from `src/web/`.
 
-IMGW public data lives in the `src/imgw/` module. Each product file owns its endpoint, raw record shape, and mapping into the application model, while `value.zig` (string-value coercion), `http.zig` (transport), and `records.zig` (JSON-array decoding) hold the shared code. Add a product by creating one file and exposing it from `imgw/mod.zig`; the `warnings` domain model stays in `src/warnings.zig`. The updater polls products and writes them to the store.
+IMGW public data lives in the `src/imgw/` module. Each product file owns its endpoint, raw record shape, and mapping into the application model; it instantiates `product.zig` for its fetch and decode plumbing, and it maps its wire fields onto `observation_fields.zig` or `warnings.fields` when two products publish the same data under different names. `value.zig` (string-value coercion), `http.zig` (transport), and `records.zig` (JSON-array decoding) hold the rest of the shared code. Add a product by creating one file, exposing it from `imgw/mod.zig`, and adding one entry to the source table in `src/weather/updater.zig`.
 
-Add a route by creating a handler with the `router.Handler` signature and registering it in the `routes` array in `src/main.zig`. Keep route matching exact; do not introduce path parameters or wildcard routing without a concrete use case.
+The weather domain lives in `src/weather/`. `model.zig` owns the observation and hydro types and the ownership rules for their text fields, `store.zig` owns the SQLite schema and queries, and `updater.zig` polls the configured sources and writes them to the store. Sources depend on the model and never on storage; keep that direction when adding a product. The `warnings` domain model stays in `src/warnings.zig` and is only re-exported by `weather/mod.zig`.
+
+Add a route by creating a handler with the `router.Handler` signature and registering it in the `routes` array in `src/main.zig`. Build `/api/*` handlers that list stations or return one station's history with `historyRoute`/`stationsRoute` in `routes/api.zig` instead of writing them out, and read query parameters with `RequestContext.param`. Keep route matching exact; do not introduce path parameters or wildcard routing without a concrete use case.
 
 ## Build, Test, and Development Commands
 
