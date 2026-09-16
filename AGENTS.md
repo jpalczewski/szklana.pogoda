@@ -34,6 +34,14 @@ Place focused Zig `test "description"` blocks near the router or behavior they c
 
 ## Commit & Pull Request Guidelines
 
-Use concise imperative commit subjects, matching existing history: `Add weather endpoint`, `Handle malformed requests`, or `Restyle with 98.css`. Keep each commit scoped to one coherent change.
+Use [Conventional Commits](https://www.conventionalcommits.org/) for every commit: `<type>(<scope>): <subject>`.
+
+- Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
+- Scope is optional but preferred; name the module, route group, or concern being touched: `warnings`, `hydro`, `meteo`, `router`, `store`, `web`, `metrics`, `config`.
+- Subject: imperative mood, lowercase, no trailing period, at most 72 characters, e.g. `feat(warnings): ingest IMGW meteorological warnings`.
+- Body (optional, after a blank line) explains why rather than how, and names the endpoint, table, or environment variable a behavioral change touches.
+- Breaking changes: append `!` to the type or scope (`feat(api)!: rename the stations payload`) and add a `BREAKING CHANGE:` footer describing the affected route, environment variable, or schema.
+
+Keep each commit scoped to one coherent change.
 
 Pull requests should explain the behavioral change, list test commands run, and call out API contract or environment-variable changes. Include a screenshot for visible frontend changes and link the relevant issue when one exists.
