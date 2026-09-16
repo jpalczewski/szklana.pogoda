@@ -31,7 +31,12 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    const sqlite = b.dependency("sqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
     exe.root_module.addImport("i18n", i18n_module);
+    exe.root_module.addImport("sqlite", sqlite.module("sqlite"));
     if (target.result.os.tag == .macos) exe.root_module.linkSystemLibrary("proc", .{});
     b.installArtifact(exe);
 
@@ -49,6 +54,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tests.root_module.addImport("i18n", i18n_module);
+    tests.root_module.addImport("sqlite", sqlite.module("sqlite"));
     if (target.result.os.tag == .macos) tests.root_module.linkSystemLibrary("proc", .{});
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");

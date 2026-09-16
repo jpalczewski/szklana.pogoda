@@ -2,17 +2,20 @@ const std = @import("std");
 const http = std.http;
 const Io = std.Io;
 const metrics = @import("metrics.zig");
+const weather_store = @import("weather_store.zig");
 
 pub const App = struct {
     max_body_bytes: usize,
     trust_proxy: bool = false,
     metrics: ?*metrics.Registry = null,
+    weather_store: ?*weather_store.Store = null,
 };
 
 pub const AppError = std.mem.Allocator.Error || error{
     BadRequest,
     BodyReadFailed,
     MemoryStatisticsUnavailable,
+    WeatherStoreUnavailable,
     PayloadTooLarge,
 };
 
@@ -143,7 +146,7 @@ pub fn errorResponse(allocator: std.mem.Allocator, path: []const u8, err: AppErr
     return switch (err) {
         error.BadRequest, error.BodyReadFailed => errorFor(allocator, path, .bad_request, .bad_request),
         error.PayloadTooLarge => errorFor(allocator, path, .payload_too_large, .payload_too_large),
-        error.MemoryStatisticsUnavailable, error.OutOfMemory => errorFor(allocator, path, .internal_server_error, .internal_server_error),
+        error.MemoryStatisticsUnavailable, error.WeatherStoreUnavailable, error.OutOfMemory => errorFor(allocator, path, .internal_server_error, .internal_server_error),
     };
 }
 

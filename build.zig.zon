@@ -1,0 +1,12 @@
+.{
+    .name = .szklana_pogoda,
+    .version = "0.16.0",
+    .dependencies = .{
+        .sqlite = .{
+            .url = "git+https://github.com/vrischmann/zig-sqlite#961c14efb2c9cc4bc6c065926ac3bdb74520c995",
+            .hash = "sqlite-3.48.0-F2R_a-akDgC9Nl0WrJKKmmsRppgaacuXNU5758BOFt-6",
+        },
+    },
+    .paths = .{""},
+    .fingerprint = 0x6956649626ed9792,
+}

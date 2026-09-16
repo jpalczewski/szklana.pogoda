@@ -16,9 +16,41 @@ pub const ListenerConfig = struct {
 };
 
 const Observation = struct {
-    registry: *metrics.Registry,
+    registry: ?*metrics.Registry,
+    started_at: Io.Timestamp,
+    peer_ip: []const u8,
+    client_ip: []const u8,
     method: []const u8,
     route: []const u8,
+    target: []const u8,
+    headers: []const router.Header,
+
+    fn begin(self: *const Observation) void {
+        if (self.registry) |registry| registry.begin(self.method, self.route);
+    }
+
+    fn end(self: *const Observation) void {
+        if (self.registry) |registry| registry.end(self.method, self.route);
+    }
+
+    fn finish(self: *const Observation, io: Io, response: router.Response) void {
+        const elapsed_ms = self.started_at.durationTo(Io.Clock.awake.now(io)).toMilliseconds();
+        app_log.logAccess(.{
+            .client_ip = self.client_ip,
+            .peer_ip = self.peer_ip,
+            .method = self.method,
+            .target = self.target,
+            .status = @intCast(@intFromEnum(response.status)),
+            .duration_ms = @intCast(@max(0, elapsed_ms)),
+            .user_agent = findHeader(self.headers, "user-agent"),
+            .referer = findHeader(self.headers, "referer"),
+            .response_bytes = response.body.len,
+        });
+        if (self.registry) |registry| {
+            const duration_ns = elapsed_ms * std.time.ns_per_ms;
+            registry.finish(self.method, self.route, @intCast(@intFromEnum(response.status)), @intCast(@max(0, duration_ns)));
+        }
+    }
 };
 
 pub fn serve(gpa: std.mem.Allocator, io: Io, config: *const ListenerConfig, connections: *Io.Group) void {
@@ -71,19 +103,22 @@ fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, confi
     const content_length = request.head.content_length;
     const target_parts = router.splitTarget(target);
     const client_ip = clientIp(config.app.trust_proxy, headers, peer_ip);
-    const observation: ?Observation = if (config.instrument_requests) if (config.app.metrics) |registry| .{
-        .registry = registry,
+    const observation: Observation = .{
+        .registry = if (config.instrument_requests) config.app.metrics else null,
+        .started_at = started_at,
+        .peer_ip = peer_ip,
+        .client_ip = client_ip,
         .method = @tagName(method),
         .route = routeLabel(config.routes, target_parts.path),
-    } else null else null;
-    if (observation) |item| {
-        item.registry.begin(item.method, item.route);
-        defer item.registry.end(item.method, item.route);
-    }
+        .target = target,
+        .headers = headers,
+    };
+    observation.begin();
+    defer observation.end();
 
     if (content_length) |length| {
         if (length > config.app.max_body_bytes) {
-            try writeResponseAndLog(io, &request, router.errorResponse(allocator, target_parts.path, error.PayloadTooLarge), started_at, peer_ip, client_ip, method, target, headers, observation);
+            try writeResponseAndLog(io, &request, router.errorResponse(allocator, target_parts.path, error.PayloadTooLarge), &observation);
             return;
         }
     }
@@ -92,7 +127,7 @@ fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, confi
     var body: router.Body = undefined;
     const body_ptr: ?*router.Body = if (has_framed_body) blk: {
         const body_reader = request.readerExpectContinue(&.{}) catch |err| {
-            try writeResponseAndLog(io, &request, router.errorResponse(allocator, target_parts.path, error.BadRequest), started_at, peer_ip, client_ip, method, target, headers, observation);
+            try writeResponseAndLog(io, &request, router.errorResponse(allocator, target_parts.path, error.BadRequest), &observation);
             return err;
         };
         body = router.Body.init(body_reader, config.app.max_body_bytes);
@@ -109,7 +144,7 @@ fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, confi
     };
 
     const response = router.dispatch(config.routes, config.app, &context) catch |err| router.errorResponse(allocator, context.path, err);
-    try writeResponseAndLog(io, &request, response, started_at, peer_ip, client_ip, method, target, headers, observation);
+    try writeResponseAndLog(io, &request, response, &observation);
 }
 
 fn routeLabel(routes: []const router.Route, path: []const u8) []const u8 {
@@ -189,30 +224,47 @@ fn writeResponseAndLog(
     io: Io,
     request: *http.Server.Request,
     response: router.Response,
-    started_at: Io.Timestamp,
-    peer_ip: []const u8,
-    client_ip: []const u8,
-    method: http.Method,
-    target: []const u8,
-    headers: []const router.Header,
-    observation: ?Observation,
+    observation: *const Observation,
 ) !void {
     try writeResponse(request, response);
-    const elapsed_ms = started_at.durationTo(Io.Clock.awake.now(io)).toMilliseconds();
-    app_log.logAccess(.{
-        .client_ip = client_ip,
-        .peer_ip = peer_ip,
-        .method = @tagName(method),
-        .target = target,
-        .status = @intCast(@intFromEnum(response.status)),
-        .duration_ms = @intCast(@max(0, elapsed_ms)),
-        .user_agent = findHeader(headers, "user-agent"),
-        .referer = findHeader(headers, "referer"),
-        .response_bytes = response.body.len,
-    });
-    if (observation) |item| {
-        const duration_ns = elapsed_ms * std.time.ns_per_ms;
-        item.registry.finish(item.method, item.route, @intCast(@intFromEnum(response.status)), @intCast(@max(0, duration_ns)));
+    observation.finish(io, response);
+}
+
+test "observation stays active until scope exit including error returns" {
+    const exercise = struct {
+        fn run(registry: *metrics.Registry, fail: bool) !void {
+            const observation: Observation = .{
+                .registry = registry,
+                .started_at = Io.Clock.awake.now(std.testing.io),
+                .peer_ip = "192.0.2.1",
+                .client_ip = "192.0.2.1",
+                .method = "GET",
+                .route = "/",
+                .target = "/",
+                .headers = &.{},
+            };
+            observation.begin();
+            defer observation.end();
+
+            const active = try registry.render(std.testing.allocator);
+            defer std.testing.allocator.free(active);
+            try std.testing.expect(std.mem.indexOf(u8, active, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 1\n") != null);
+            if (fail) return error.TestRequestFailed;
+        }
+    };
+
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    for ([_]bool{ false, true }) |fail| {
+        if (fail) {
+            try std.testing.expectError(error.TestRequestFailed, exercise.run(&registry, fail));
+        } else {
+            try exercise.run(&registry, fail);
+        }
+        const ended = try registry.render(std.testing.allocator);
+        defer std.testing.allocator.free(ended);
+        try std.testing.expect(std.mem.indexOf(u8, ended, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 0\n") != null);
+        try std.testing.expectEqual(@as(usize, 0), registry.series.items.len);
     }
 }
 
