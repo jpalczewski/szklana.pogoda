@@ -13,24 +13,26 @@ const imgw = @import("imgw/mod.zig");
 const weather = @import("weather/mod.zig");
 const warnings = @import("warnings.zig");
 
+/// Forces the semantic analyzer over every function of a module, so production
+/// builds keep checking code that no call path reaches. Referencing a
+/// declaration as a value is not enough for that; its address is.
+fn analyzeDecls(comptime T: type) void {
+    inline for (comptime std.meta.declarations(T)) |decl| {
+        if (@TypeOf(@field(T, decl.name)) == type) {
+            switch (@typeInfo(@field(T, decl.name))) {
+                .@"struct", .@"enum", .@"union", .@"opaque" => analyzeDecls(@field(T, decl.name)),
+                else => {},
+            }
+        } else if (@typeInfo(@TypeOf(@field(T, decl.name))) == .@"fn") {
+            _ = &@field(T, decl.name);
+        }
+    }
+}
+
 comptime {
-    _ = imgw.synop.parse;
-    _ = imgw.synop.fetch;
-    _ = imgw.meteo.parse;
-    _ = imgw.meteo.fetch;
-    _ = imgw.hydro.parse;
-    _ = imgw.hydro.fetch;
-    _ = imgw.warnings.meteo.parse;
-    _ = imgw.warnings.hydro.parse;
-    _ = imgw.warnings.meteo.fetch;
-    _ = imgw.warnings.hydro.fetch;
-    _ = imgw.warnings.fields.decode;
-    _ = imgw.value.optionalFloat;
-    _ = imgw.records.decode;
-    _ = warnings.localNow;
-    _ = warnings.warsawOffsetSeconds;
-    _ = weather.updater.run;
-    _ = weather.updater.runWarnings;
+    analyzeDecls(imgw);
+    analyzeDecls(weather);
+    analyzeDecls(warnings);
 }
 
 pub const std_options: std.Options = .{
