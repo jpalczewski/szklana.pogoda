@@ -1,10 +1,13 @@
 const std = @import("std");
 const sqlite = @import("sqlite");
+const model = @import("model.zig");
 const warnings = @import("../warnings.zig");
 
-pub const Warning = warnings.Warning;
-pub const WarningArea = warnings.Area;
-pub const WarningSource = warnings.Source;
+/// Warning types are owned by `warnings.zig`; the store only names them in its
+/// queries and leaves the public surface to `mod.zig`.
+const Warning = warnings.Warning;
+const WarningArea = warnings.Area;
+const WarningSource = warnings.Source;
 
 /// Everything that narrows a warning query. `effective_to_gte` compares
 /// against IMGW's `"YYYY-MM-DD HH:MM:SS"` local-time format and expresses
@@ -72,51 +75,6 @@ const warning_area_select =
 ;
 const warning_area_order = "\nORDER BY a.source ASC, a.warning_id ASC, a.revision ASC";
 
-pub const Observation = struct {
-    station_id: []const u8,
-    station_name: []const u8,
-    observed_at: []const u8,
-    temperature_c: ?f64,
-    wind_speed_m_s: ?f64,
-    wind_direction_deg: ?i16,
-    relative_humidity_percent: ?f64,
-    precipitation_mm: ?f64,
-    pressure_hpa: ?f64,
-};
-
-pub const Station = struct {
-    station_id: []const u8,
-    station_name: []const u8,
-    last_observed_at: []const u8,
-};
-
-pub const HydroStation = struct {
-    station_id: []const u8,
-    station_name: []const u8,
-    river: []const u8,
-    voivodeship: []const u8,
-    longitude: ?f64,
-    latitude: ?f64,
-    founded_year: ?i32,
-    gauge_zero_m: ?f64,
-    river_km: ?f64,
-    warning_level_cm: ?f64,
-    alarm_level_cm: ?f64,
-    water_level_cm: ?f64,
-    water_level_observed_at: ?[]const u8,
-    water_temperature_c: ?f64,
-    water_temperature_observed_at: ?[]const u8,
-    flow_m3_s: ?f64,
-    flow_observed_at: ?[]const u8,
-    ice_phenomenon: ?i32,
-    ice_phenomenon_observed_at: ?[]const u8,
-    overgrowth_phenomenon: ?i32,
-    overgrowth_phenomenon_observed_at: ?[]const u8,
-    water_level_status: []const u8,
-};
-
-pub const HydroObservation = HydroStation;
-
 pub const Store = struct {
     db: sqlite.Db,
 
@@ -150,7 +108,7 @@ pub const Store = struct {
         self.db.deinit();
     }
 
-    pub fn record(self: *Store, observation: Observation) !void {
+    pub fn record(self: *Store, observation: model.Observation) !void {
         try self.db.exec(
             \\INSERT INTO weather_observations (
             \\    station_id, station_name, observed_at, temperature_c, wind_speed_m_s,
@@ -180,7 +138,7 @@ pub const Store = struct {
         );
     }
 
-    pub fn history(self: *Store, allocator: std.mem.Allocator, station_id: []const u8, since: []const u8) ![]Observation {
+    pub fn history(self: *Store, allocator: std.mem.Allocator, station_id: []const u8, since: []const u8) ![]model.Observation {
         var statement = try self.db.prepare(
             \\SELECT station_id, station_name, observed_at, temperature_c, wind_speed_m_s,
             \\       wind_direction_deg, relative_humidity_percent, precipitation_mm, pressure_hpa
@@ -189,10 +147,10 @@ pub const Store = struct {
             \\ORDER BY observed_at ASC
         );
         defer statement.deinit();
-        return statement.all(Observation, allocator, .{}, .{ .station_id = station_id, .since = since });
+        return statement.all(model.Observation, allocator, .{}, .{ .station_id = station_id, .since = since });
     }
 
-    pub fn stations(self: *Store, allocator: std.mem.Allocator) ![]Station {
+    pub fn stations(self: *Store, allocator: std.mem.Allocator) ![]model.Station {
         var statement = try self.db.prepare(
             \\SELECT station_id, station_name, MAX(observed_at)
             \\FROM weather_observations
@@ -200,10 +158,10 @@ pub const Store = struct {
             \\ORDER BY station_name COLLATE NOCASE ASC
         );
         defer statement.deinit();
-        return statement.all(Station, allocator, .{}, .{});
+        return statement.all(model.Station, allocator, .{}, .{});
     }
 
-    pub fn recordHydro(self: *Store, item: HydroObservation) !void {
+    pub fn recordHydro(self: *Store, item: model.HydroObservation) !void {
         try self.db.exec(
             \\INSERT INTO hydro_observations (station_id, station_name, river, voivodeship, longitude, latitude, founded_year, gauge_zero_m, river_km, warning_level_cm, alarm_level_cm, water_level_cm, water_level_observed_at, water_temperature_c, water_temperature_observed_at, flow_m3_s, flow_observed_at, ice_phenomenon, ice_phenomenon_observed_at, overgrowth_phenomenon, overgrowth_phenomenon_observed_at, water_level_status)
             \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -212,23 +170,23 @@ pub const Store = struct {
         , .{}, .{ .station_id = item.station_id, .station_name = item.station_name, .river = item.river, .voivodeship = item.voivodeship, .longitude = item.longitude, .latitude = item.latitude, .founded_year = item.founded_year, .gauge_zero_m = item.gauge_zero_m, .river_km = item.river_km, .warning_level_cm = item.warning_level_cm, .alarm_level_cm = item.alarm_level_cm, .water_level_cm = item.water_level_cm, .water_level_observed_at = item.water_level_observed_at, .water_temperature_c = item.water_temperature_c, .water_temperature_observed_at = item.water_temperature_observed_at, .flow_m3_s = item.flow_m3_s, .flow_observed_at = item.flow_observed_at, .ice_phenomenon = item.ice_phenomenon, .ice_phenomenon_observed_at = item.ice_phenomenon_observed_at, .overgrowth_phenomenon = item.overgrowth_phenomenon, .overgrowth_phenomenon_observed_at = item.overgrowth_phenomenon_observed_at, .water_level_status = item.water_level_status });
     }
 
-    pub fn hydroStations(self: *Store, allocator: std.mem.Allocator) ![]HydroStation {
+    pub fn hydroStations(self: *Store, allocator: std.mem.Allocator) ![]model.HydroStation {
         var statement = try self.db.prepare(
             \\SELECT station_id, station_name, river, voivodeship, longitude, latitude, founded_year, gauge_zero_m, river_km, warning_level_cm, alarm_level_cm, water_level_cm, water_level_observed_at, water_temperature_c, water_temperature_observed_at, flow_m3_s, flow_observed_at, ice_phenomenon, ice_phenomenon_observed_at, overgrowth_phenomenon, overgrowth_phenomenon_observed_at, water_level_status
             \\FROM hydro_observations
             \\WHERE water_level_observed_at = (SELECT MAX(h.water_level_observed_at) FROM hydro_observations h WHERE h.station_id = hydro_observations.station_id)
         );
         defer statement.deinit();
-        return statement.all(HydroStation, allocator, .{}, .{});
+        return statement.all(model.HydroStation, allocator, .{}, .{});
     }
 
-    pub fn hydroHistory(self: *Store, allocator: std.mem.Allocator, station_id: []const u8, since: []const u8) ![]HydroObservation {
+    pub fn hydroHistory(self: *Store, allocator: std.mem.Allocator, station_id: []const u8, since: []const u8) ![]model.HydroObservation {
         var statement = try self.db.prepare(
             \\SELECT station_id, station_name, river, voivodeship, longitude, latitude, founded_year, gauge_zero_m, river_km, warning_level_cm, alarm_level_cm, water_level_cm, water_level_observed_at, water_temperature_c, water_temperature_observed_at, flow_m3_s, flow_observed_at, ice_phenomenon, ice_phenomenon_observed_at, overgrowth_phenomenon, overgrowth_phenomenon_observed_at, water_level_status
             \\FROM hydro_observations WHERE station_id = ? AND water_level_observed_at >= ? ORDER BY water_level_observed_at ASC
         );
         defer statement.deinit();
-        return statement.all(HydroObservation, allocator, .{}, .{ .station_id = station_id, .since = since });
+        return statement.all(model.HydroObservation, allocator, .{}, .{ .station_id = station_id, .since = since });
     }
 
     /// Stores every warning of a fresh IMGW response. A warning already known
@@ -449,46 +407,6 @@ pub const Store = struct {
         return items.toOwnedSlice(allocator);
     }
 
-    pub fn deinitWarnings(allocator: std.mem.Allocator, items: []Warning) void {
-        warnings.deinitWarnings(allocator, items);
-    }
-
-    pub fn deinitHydro(allocator: std.mem.Allocator, items: []HydroObservation) void {
-        for (items) |item| {
-            allocator.free(item.station_id);
-            allocator.free(item.station_name);
-            allocator.free(item.river);
-            allocator.free(item.voivodeship);
-            allocator.free(item.water_level_status);
-            inline for (.{ "water_level_observed_at", "water_temperature_observed_at", "flow_observed_at", "ice_phenomenon_observed_at", "overgrowth_phenomenon_observed_at" }) |field| {
-                if (@field(item, field)) |value| allocator.free(value);
-            }
-        }
-        allocator.free(items);
-    }
-
-    pub fn deinitHistory(allocator: std.mem.Allocator, observations: []Observation) void {
-        deinitHistoryItems(allocator, observations);
-        allocator.free(observations);
-    }
-
-    pub fn deinitHistoryItems(allocator: std.mem.Allocator, observations: []Observation) void {
-        for (observations) |observation| {
-            allocator.free(observation.station_id);
-            allocator.free(observation.station_name);
-            allocator.free(observation.observed_at);
-        }
-    }
-
-    pub fn deinitStations(allocator: std.mem.Allocator, items: []Station) void {
-        for (items) |station| {
-            allocator.free(station.station_id);
-            allocator.free(station.station_name);
-            allocator.free(station.last_observed_at);
-        }
-        allocator.free(items);
-    }
-
     fn migrate(self: *Store) !void {
         try self.db.execMulti(
             \\CREATE TABLE IF NOT EXISTS weather_observations (
@@ -605,7 +523,7 @@ test "stores each station observation once and returns its history" {
     });
 
     const observations = try store.history(std.testing.allocator, "12424", "2026-09-16T00:00:00Z");
-    defer Store.deinitHistory(std.testing.allocator, observations);
+    defer model.deinitObservations(std.testing.allocator, observations);
 
     try std.testing.expectEqual(@as(usize, 1), observations.len);
     try std.testing.expectEqualStrings("Wrocław", observations[0].station_name);
@@ -656,7 +574,7 @@ test "records a warning once and only refreshes its last seen time" {
     try std.testing.expectEqual(@as(usize, 1), try store.recordWarnings(&.{testWarning()}, "2026-09-16 23:55:00"));
 
     const items = try store.warningHistory(std.testing.allocator, .{});
-    defer Store.deinitWarnings(std.testing.allocator, items);
+    defer warnings.deinitWarnings(std.testing.allocator, items);
 
     try std.testing.expectEqual(@as(usize, 1), items.len);
     try std.testing.expectEqual(@as(u32, 1), items[0].revision);
@@ -677,7 +595,7 @@ test "changed warning content becomes a new stored revision" {
     _ = try store.recordWarnings(&.{changed}, "2026-09-16 23:35:00");
 
     const history = try store.warningHistory(std.testing.allocator, .{});
-    defer Store.deinitWarnings(std.testing.allocator, history);
+    defer warnings.deinitWarnings(std.testing.allocator, history);
     try std.testing.expectEqual(@as(usize, 2), history.len);
     try std.testing.expectEqual(@as(u32, 1), history[0].revision);
     try std.testing.expectEqual(@as(u32, 2), history[1].revision);
@@ -688,7 +606,7 @@ test "changed warning content becomes a new stored revision" {
         .effective_to_gte = "2026-09-16 23:50:00",
         .latest_only = true,
     });
-    defer Store.deinitWarnings(std.testing.allocator, active);
+    defer warnings.deinitWarnings(std.testing.allocator, active);
     try std.testing.expectEqual(@as(usize, 1), active.len);
     try std.testing.expectEqual(@as(u32, 2), active[0].revision);
     try std.testing.expectEqualStrings("Sk20260916094336328", active[0].warning_id);
@@ -708,7 +626,7 @@ test "active warnings expire, filter by TERYT and stay source separated" {
         .effective_to_gte = "2026-09-17 06:00:00",
         .latest_only = true,
     });
-    defer Store.deinitWarnings(std.testing.allocator, still_active);
+    defer warnings.deinitWarnings(std.testing.allocator, still_active);
     try std.testing.expectEqual(@as(usize, 3), still_active.len);
     // Warnings are ordered by source first, so find the county-less one by id.
     const area_less = for (still_active, 0..) |item, index| {
@@ -721,7 +639,7 @@ test "active warnings expire, filter by TERYT and stay source separated" {
         .effective_to_gte = "2026-09-17 08:00:00",
         .latest_only = true,
     });
-    defer Store.deinitWarnings(std.testing.allocator, expired);
+    defer warnings.deinitWarnings(std.testing.allocator, expired);
     try std.testing.expectEqual(@as(usize, 1), expired.len);
     try std.testing.expectEqual(WarningSource.hydro, expired[0].source);
 
@@ -730,7 +648,7 @@ test "active warnings expire, filter by TERYT and stay source separated" {
         .effective_to_gte = "2026-09-17 06:00:00",
         .latest_only = true,
     });
-    defer Store.deinitWarnings(std.testing.allocator, county);
+    defer warnings.deinitWarnings(std.testing.allocator, county);
     try std.testing.expectEqual(@as(usize, 1), county.len);
     try std.testing.expectEqualStrings("Sk20260916094336328", county[0].warning_id);
 
@@ -739,17 +657,17 @@ test "active warnings expire, filter by TERYT and stay source separated" {
         .effective_to_gte = "2026-09-17 06:00:00",
         .latest_only = true,
     });
-    defer Store.deinitWarnings(std.testing.allocator, unknown_county);
+    defer warnings.deinitWarnings(std.testing.allocator, unknown_county);
     try std.testing.expectEqual(@as(usize, 0), unknown_county.len);
 
     const revisions = try store.warningRevisions(std.testing.allocator, .meteo, "Sk20260916094336328");
-    defer Store.deinitWarnings(std.testing.allocator, revisions);
+    defer warnings.deinitWarnings(std.testing.allocator, revisions);
     try std.testing.expectEqual(@as(usize, 1), revisions.len);
     try std.testing.expectEqualStrings("Intensywne opady deszczu", revisions[0].event);
     try std.testing.expectEqualStrings("2026-09-16 23:05:00", revisions[0].first_seen_at);
 
     const hydro = try store.warningHistory(std.testing.allocator, .{ .source = .hydro });
-    defer Store.deinitWarnings(std.testing.allocator, hydro);
+    defer warnings.deinitWarnings(std.testing.allocator, hydro);
     try std.testing.expectEqual(@as(usize, 1), hydro.len);
     try std.testing.expectEqualStrings("Z_P_WP_1856", hydro[0].areas[0].basin_code.?);
     try std.testing.expectEqual(@as(?i16, -1), hydro[0].severity);

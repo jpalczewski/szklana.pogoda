@@ -2,18 +2,22 @@
 //!
 //! The observation and hydro models, their SQLite store and the updater that
 //! keeps both fed from the IMGW sources. The IMGW client lives in `imgw/` and
-//! maps its wire records into these models, so the sources depend on the model
+//! maps its wire records into the model, so the sources depend on the model
 //! rather than on storage. The warning model stays in `warnings.zig` and is
 //! re-exported here so callers have a single import site.
+
+/// Model types and the ownership rules for their text fields.
+pub const model = @import("model.zig");
 
 const store = @import("store.zig");
 
 pub const Store = store.Store;
-pub const Observation = store.Observation;
-pub const Station = store.Station;
-pub const HydroObservation = store.HydroObservation;
-pub const HydroStation = store.HydroStation;
 pub const WarningFilter = store.WarningFilter;
+
+pub const Observation = model.Observation;
+pub const Station = model.Station;
+pub const HydroObservation = model.HydroObservation;
+pub const HydroStation = model.HydroStation;
 
 /// The polling loop that feeds the store from the IMGW products.
 pub const updater = @import("updater.zig");

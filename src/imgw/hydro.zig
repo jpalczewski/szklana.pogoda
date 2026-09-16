@@ -3,7 +3,7 @@ const Io = std.Io;
 const value = @import("value.zig");
 const http = @import("http.zig");
 const records = @import("records.zig");
-const weather_store = @import("../weather/store.zig");
+const model = @import("../weather/model.zig");
 
 pub const Error = value.Error;
 
@@ -38,25 +38,25 @@ const Raw = struct {
     zjawisko_zarastania_data_pomiaru: ?[]const u8 = null, // overgrowth phenomenon timestamp
 };
 
-pub fn fetch(allocator: std.mem.Allocator, io: Io) Error![]weather_store.HydroObservation {
-    return http.fetchParsed([]weather_store.HydroObservation, allocator, io, endpoint, parse);
+pub fn fetch(allocator: std.mem.Allocator, io: Io) Error![]model.HydroObservation {
+    return http.fetchParsed([]model.HydroObservation, allocator, io, endpoint, parse);
 }
 
 /// A station without a water-level timestamp carries no usable measurement,
 /// so it is skipped rather than stored half-empty.
-pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]weather_store.HydroObservation {
+pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]model.HydroObservation {
     return records.decode(
-        weather_store.HydroObservation,
+        model.HydroObservation,
         Raw,
         parseRaw,
-        weather_store.Store.deinitHydro,
+        model.deinitHydro,
         allocator,
         body,
         .{ .label = "hydro" },
     );
 }
 
-fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!weather_store.HydroObservation {
+fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.HydroObservation {
     const station_id = try value.presentText(allocator, raw.id_stacji);
     errdefer allocator.free(station_id);
     const station_name = try value.presentText(allocator, raw.stacja);
@@ -118,7 +118,7 @@ test "parses hydro station and computes threshold status" {
         \\[{"id_stacji":"151140030","stacja":"Przewoźniki","rzeka":"Skroda","wojewodztwo":"lubuskie","lon":"14.8217","lat":"51.5253","stan_alarmowy":"340","stan_ostrzegawczy":"300","stan_wody":"310","stan_wody_data_pomiaru":"2026-09-16 07:50:00","przeplyw":"0.11"}]
     ;
     const items = try parse(std.testing.allocator, body);
-    defer weather_store.Store.deinitHydro(std.testing.allocator, items);
+    defer model.deinitHydro(std.testing.allocator, items);
 
     try std.testing.expectEqual(@as(usize, 1), items.len);
     try std.testing.expectEqualStrings("warning", items[0].water_level_status);
@@ -138,7 +138,7 @@ test "skips hydro stations without a level timestamp" {
         \\[{"id_stacji":"1","stacja":"Bez czasu","rzeka":"Rzeka","stan_wody":"310"}]
     ;
     const items = try parse(std.testing.allocator, body);
-    defer weather_store.Store.deinitHydro(std.testing.allocator, items);
+    defer model.deinitHydro(std.testing.allocator, items);
     try std.testing.expectEqual(@as(usize, 0), items.len);
 }
 
@@ -147,7 +147,7 @@ test "keeps a dash river name because IMGW uses it for harbour gauges" {
         \\[{"id_stacji":"154180140","stacja":"Gdańsk","rzeka":"-","stan_alarmowy":"570","stan_ostrzegawczy":"550","stan_wody":"525","stan_wody_data_pomiaru":"2026-09-16 22:20:00"}]
     ;
     const items = try parse(std.testing.allocator, body);
-    defer weather_store.Store.deinitHydro(std.testing.allocator, items);
+    defer model.deinitHydro(std.testing.allocator, items);
 
     try std.testing.expectEqual(@as(usize, 1), items.len);
     try std.testing.expectEqualStrings("-", items[0].river);

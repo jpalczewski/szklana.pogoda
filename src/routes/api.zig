@@ -26,7 +26,7 @@ pub fn weatherHistory(app: *router.App, request: *router.RequestContext) router.
         std.log.err("weather history unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather.Store.deinitHistory(request.allocator, observations);
+    defer weather.model.deinitObservations(request.allocator, observations);
     return router.Response.jsonValue(request.allocator, .ok, .{
         .station_id = station_id,
         .observations = observations,
@@ -39,7 +39,7 @@ pub fn weatherStations(app: *router.App, request: *router.RequestContext) router
         std.log.err("weather stations unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather.Store.deinitStations(request.allocator, stations);
+    defer weather.model.deinitStations(request.allocator, stations);
     return router.Response.jsonValue(request.allocator, .ok, .{ .stations = stations });
 }
 
@@ -49,7 +49,7 @@ pub fn hydroStations(app: *router.App, request: *router.RequestContext) router.A
         std.log.err("hydro stations unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather.Store.deinitHydro(request.allocator, stations);
+    defer weather.model.deinitHydro(request.allocator, stations);
     return router.Response.jsonValue(request.allocator, .ok, .{ .stations = stations });
 }
 
@@ -62,7 +62,7 @@ pub fn hydroHistory(app: *router.App, request: *router.RequestContext) router.Ap
         std.log.err("hydro history unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather.Store.deinitHydro(request.allocator, observations);
+    defer weather.model.deinitHydro(request.allocator, observations);
     return router.Response.jsonValue(request.allocator, .ok, .{ .station_id = station_id, .observations = observations });
 }
 
@@ -128,7 +128,7 @@ pub fn warningsActive(app: *router.App, request: *router.RequestContext) router.
         std.log.err("warning query failed: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather.Store.deinitWarnings(request.allocator, items);
+    defer warnings.deinitWarnings(request.allocator, items);
     return router.Response.jsonValue(request.allocator, .ok, .{ .warnings = items });
 }
 
@@ -146,7 +146,7 @@ pub fn warningsHistory(app: *router.App, request: *router.RequestContext) router
         std.log.err("warning history unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather.Store.deinitWarnings(request.allocator, items);
+    defer warnings.deinitWarnings(request.allocator, items);
     return router.Response.jsonValue(request.allocator, .ok, .{ .warnings = items });
 }
 
@@ -161,7 +161,7 @@ pub fn warningsRevisions(app: *router.App, request: *router.RequestContext) rout
         std.log.err("warning revisions unavailable: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
-    defer weather.Store.deinitWarnings(request.allocator, items);
+    defer warnings.deinitWarnings(request.allocator, items);
     return router.Response.jsonValue(request.allocator, .ok, .{
         .source = source,
         .warning_id = warning_id,

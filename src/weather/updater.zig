@@ -2,14 +2,15 @@ const std = @import("std");
 const Io = std.Io;
 
 const imgw = @import("../imgw/mod.zig");
+const model = @import("model.zig");
+const storage = @import("store.zig");
 const warnings = @import("../warnings.zig");
-const weather_store = @import("store.zig");
 
-/// Both measurement products normalize into `weather_store.Observation`, so
-/// only the fetch differs.
+/// Both measurement products normalize into `model.Observation`, so only the
+/// fetch differs.
 const ObservationProduct = enum { synop, meteo };
 
-pub fn run(allocator: std.mem.Allocator, io: Io, store: *weather_store.Store, interval_seconds: u64) void {
+pub fn run(allocator: std.mem.Allocator, io: Io, store: *storage.Store, interval_seconds: u64) void {
     while (true) {
         updateObservations(allocator, io, store, .synop);
         updateObservations(allocator, io, store, .meteo);
@@ -20,14 +21,14 @@ pub fn run(allocator: std.mem.Allocator, io: Io, store: *weather_store.Store, in
 
 /// Warnings change independently of the measurements, so they run on their own
 /// cadence and against their own endpoints.
-pub fn runWarnings(allocator: std.mem.Allocator, io: Io, store: *weather_store.Store, interval_seconds: u64) void {
+pub fn runWarnings(allocator: std.mem.Allocator, io: Io, store: *storage.Store, interval_seconds: u64) void {
     while (true) {
         updateWarnings(allocator, io, store);
         sleep(io, interval_seconds) catch return;
     }
 }
 
-fn updateObservations(allocator: std.mem.Allocator, io: Io, store: *weather_store.Store, product: ObservationProduct) void {
+fn updateObservations(allocator: std.mem.Allocator, io: Io, store: *storage.Store, product: ObservationProduct) void {
     const fetched = switch (product) {
         .synop => imgw.synop.fetch(allocator, io),
         .meteo => imgw.meteo.fetch(allocator, io),
@@ -36,7 +37,7 @@ fn updateObservations(allocator: std.mem.Allocator, io: Io, store: *weather_stor
         std.log.err("IMGW {s} fetch failed: {t}", .{ @tagName(product), err });
         return;
     };
-    defer weather_store.Store.deinitHistory(allocator, observations);
+    defer model.deinitObservations(allocator, observations);
 
     var saved: usize = 0;
     for (observations) |observation| {
@@ -49,12 +50,12 @@ fn updateObservations(allocator: std.mem.Allocator, io: Io, store: *weather_stor
     std.log.info("IMGW {s} update saved {d}/{d} observations", .{ @tagName(product), saved, observations.len });
 }
 
-fn updateHydro(allocator: std.mem.Allocator, io: Io, store: *weather_store.Store) void {
+fn updateHydro(allocator: std.mem.Allocator, io: Io, store: *storage.Store) void {
     const stations = imgw.hydro.fetch(allocator, io) catch |err| {
         std.log.err("IMGW hydro fetch failed: {t}", .{err});
         return;
     };
-    defer weather_store.Store.deinitHydro(allocator, stations);
+    defer model.deinitHydro(allocator, stations);
 
     var saved: usize = 0;
     for (stations) |station| {
@@ -67,7 +68,7 @@ fn updateHydro(allocator: std.mem.Allocator, io: Io, store: *weather_store.Store
     std.log.info("IMGW hydro update saved {d}/{d} stations", .{ saved, stations.len });
 }
 
-fn updateWarnings(allocator: std.mem.Allocator, io: Io, store: *weather_store.Store) void {
+fn updateWarnings(allocator: std.mem.Allocator, io: Io, store: *storage.Store) void {
     const seen_at = warnings.localNow(allocator, io) catch |err| {
         std.log.err("reading the wall clock failed: {t}", .{err});
         return;
@@ -82,16 +83,16 @@ fn updateWarnings(allocator: std.mem.Allocator, io: Io, store: *weather_store.St
 /// the warnings of the other.
 fn storeWarnings(
     allocator: std.mem.Allocator,
-    store: *weather_store.Store,
+    store: *storage.Store,
     seen_at: []const u8,
     label: []const u8,
-    fetched: imgw.Error![]weather_store.Warning,
+    fetched: imgw.Error![]warnings.Warning,
 ) void {
     const items = fetched catch |err| {
         std.log.err("IMGW {s} warnings fetch failed: {t}", .{ label, err });
         return;
     };
-    defer weather_store.Store.deinitWarnings(allocator, items);
+    defer warnings.deinitWarnings(allocator, items);
 
     const saved = store.recordWarnings(items, seen_at) catch |err| {
         std.log.err("saving IMGW {s} warnings failed: {t}", .{ label, err });

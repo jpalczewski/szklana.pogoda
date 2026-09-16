@@ -3,7 +3,7 @@ const Io = std.Io;
 const value = @import("value.zig");
 const http = @import("http.zig");
 const records = @import("records.zig");
-const weather_store = @import("../weather/store.zig");
+const model = @import("../weather/model.zig");
 
 pub const Error = value.Error;
 
@@ -26,25 +26,25 @@ const Raw = struct {
     opad_10min_data: ?[]const u8 = null, // precipitation timestamp
 };
 
-pub fn fetch(allocator: std.mem.Allocator, io: Io) Error![]weather_store.Observation {
-    return http.fetchParsed([]weather_store.Observation, allocator, io, endpoint, parse);
+pub fn fetch(allocator: std.mem.Allocator, io: Io) Error![]model.Observation {
+    return http.fetchParsed([]model.Observation, allocator, io, endpoint, parse);
 }
 
 /// Meteo records stand alone, so one malformed station is skipped instead of
 /// discarding the whole response.
-pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]weather_store.Observation {
+pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]model.Observation {
     return records.decode(
-        weather_store.Observation,
+        model.Observation,
         Raw,
         parseRaw,
-        weather_store.Store.deinitHistoryItems,
+        model.deinitObservationItems,
         allocator,
         body,
         .{ .label = "meteo" },
     );
 }
 
-fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!weather_store.Observation {
+fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.Observation {
     const station_id = try value.presentText(allocator, raw.kod_stacji);
     errdefer allocator.free(station_id);
     const station_name = try value.presentText(allocator, raw.nazwa_stacji);
@@ -70,7 +70,7 @@ test "parses meteo records using the first available timestamp" {
         \\[{"kod_stacji":"12424","nazwa_stacji":"Wrocław","temperatura_powietrza":"18.5","temperatura_powietrza_data":"2026-09-16 07:00:00","wiatr_kierunek":"220","wiatr_srednia_predkosc":"3.5","wilgotnosc_wzgledna":"71.5","wilgotnosc_wzgledna_data":"2026-09-16 07:00:00","opad_10min":"0","opad_10min_data":"2026-09-16 07:00:00"}]
     ;
     const observations = try parse(std.testing.allocator, body);
-    defer weather_store.Store.deinitHistory(std.testing.allocator, observations);
+    defer model.deinitObservations(std.testing.allocator, observations);
 
     try std.testing.expectEqual(@as(usize, 1), observations.len);
     try std.testing.expectEqualStrings("2026-09-16T07:00:00Z", observations[0].observed_at);
@@ -83,6 +83,6 @@ test "skips a meteo record without any timestamp" {
         \\[{"kod_stacji":"1","nazwa_stacji":"Bez czasu","temperatura_powietrza":"18.5"}]
     ;
     const observations = try parse(std.testing.allocator, body);
-    defer weather_store.Store.deinitHistory(std.testing.allocator, observations);
+    defer model.deinitObservations(std.testing.allocator, observations);
     try std.testing.expectEqual(@as(usize, 0), observations.len);
 }

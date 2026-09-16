@@ -3,7 +3,7 @@ const Io = std.Io;
 const value = @import("value.zig");
 const http = @import("http.zig");
 const records = @import("records.zig");
-const weather_store = @import("../weather/store.zig");
+const model = @import("../weather/model.zig");
 
 pub const Error = value.Error;
 
@@ -25,26 +25,26 @@ const Raw = struct {
     cisnienie: ?[]const u8 = null, // pressure (hPa)
 };
 
-pub fn fetch(allocator: std.mem.Allocator, io: Io) Error![]weather_store.Observation {
-    return http.fetchParsed([]weather_store.Observation, allocator, io, endpoint, parse);
+pub fn fetch(allocator: std.mem.Allocator, io: Io) Error![]model.Observation {
+    return http.fetchParsed([]model.Observation, allocator, io, endpoint, parse);
 }
 
 /// Converts the API's string-valued records into the application's typed model.
 /// The returned strings are owned by `allocator` and must be released with
-/// `weather_store.Store.deinitHistory`.
-pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]weather_store.Observation {
+/// `model.deinitObservations`.
+pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]model.Observation {
     return records.decode(
-        weather_store.Observation,
+        model.Observation,
         Raw,
         parseRaw,
-        weather_store.Store.deinitHistoryItems,
+        model.deinitObservationItems,
         allocator,
         body,
         .{ .label = "synop", .strict = true },
     );
 }
 
-fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!weather_store.Observation {
+fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.Observation {
     const temperature = try value.optionalFloat(raw.temperatura);
     const wind_speed = try value.optionalFloat(raw.predkosc_wiatru);
     const wind_direction = try value.optionalInt(raw.kierunek_wiatru);
@@ -88,7 +88,7 @@ test "parses IMGW records and preserves missing measurements" {
         \\[{"id_stacji":"12424","stacja":"Wrocław","data_pomiaru":"2026-09-16","godzina_pomiaru":"7","temperatura":"18.5","predkosc_wiatru":"","kierunek_wiatru":"220","wilgotnosc_wzgledna":"71.5","suma_opadu":"0","cisnienie":null,"nieznane":"ok"}]
     ;
     const observations = try parse(std.testing.allocator, body);
-    defer weather_store.Store.deinitHistory(std.testing.allocator, observations);
+    defer model.deinitObservations(std.testing.allocator, observations);
 
     try std.testing.expectEqual(@as(usize, 1), observations.len);
     try std.testing.expectEqualStrings("12424", observations[0].station_id);
