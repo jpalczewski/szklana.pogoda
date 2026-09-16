@@ -11,12 +11,19 @@ const metrics = @import("metrics.zig");
 const metrics_route = @import("routes/metrics.zig");
 const weather_store = @import("weather_store.zig");
 const imgw_client = @import("imgw_client.zig");
+const imgw_warnings = @import("imgw_warnings.zig");
+const warnings = @import("warnings.zig");
 const weather_updater = @import("weather_updater.zig");
 
 comptime {
     _ = imgw_client.parse;
     _ = imgw_client.parseMeteo;
     _ = imgw_client.fetch;
+    _ = imgw_warnings.parseMeteo;
+    _ = imgw_warnings.parseHydro;
+    _ = imgw_warnings.fetchMeteo;
+    _ = warnings.localNow;
+    _ = warnings.warsawOffsetSeconds;
     _ = weather_updater.run;
 }
 

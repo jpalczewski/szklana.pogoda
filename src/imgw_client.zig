@@ -1,6 +1,7 @@
 const std = @import("std");
-const weather_store = @import("weather_store.zig");
 const Io = std.Io;
+const json = @import("imgw_json.zig");
+const weather_store = @import("weather_store.zig");
 
 const RawObservation = struct {
     id_stacji: []const u8,
@@ -53,34 +54,17 @@ const RawHydro = struct {
     zjawisko_zarastania_data_pomiaru: ?[]const u8 = null,
 };
 
-pub const Error = std.mem.Allocator.Error || error{ InvalidData, NetworkUnavailable };
+pub const Error = json.Error;
 
 pub fn fetch(allocator: std.mem.Allocator, io: Io, url: []const u8) Error![]weather_store.Observation {
-    var client: std.http.Client = .{ .allocator = allocator, .io = io };
-    defer client.deinit();
-
-    var response_body: Io.Writer.Allocating = .init(allocator);
-    defer response_body.deinit();
-    const result = client.fetch(.{
-        .location = .{ .url = url },
-        .response_writer = &response_body.writer,
-    }) catch return error.NetworkUnavailable;
-    if (result.status != .ok) return error.NetworkUnavailable;
-
-    const body = response_body.toOwnedSlice() catch return error.OutOfMemory;
+    const body = try json.get(allocator, io, url);
     defer allocator.free(body);
     if (std.mem.indexOf(u8, url, "/meteo") != null) return parseMeteo(allocator, body);
     return parse(allocator, body);
 }
 
 pub fn fetchHydro(allocator: std.mem.Allocator, io: Io, url: []const u8) Error![]weather_store.HydroObservation {
-    var client: std.http.Client = .{ .allocator = allocator, .io = io };
-    defer client.deinit();
-    var response_body: Io.Writer.Allocating = .init(allocator);
-    defer response_body.deinit();
-    const result = client.fetch(.{ .location = .{ .url = url }, .response_writer = &response_body.writer }) catch return error.NetworkUnavailable;
-    if (result.status != .ok) return error.NetworkUnavailable;
-    const body = response_body.toOwnedSlice() catch return error.OutOfMemory;
+    const body = try json.get(allocator, io, url);
     defer allocator.free(body);
     return parseHydro(allocator, body);
 }
@@ -112,33 +96,35 @@ fn parseHydroRaw(allocator: std.mem.Allocator, raw: RawHydro) Error!weather_stor
     errdefer allocator.free(river);
     const voivodeship = try allocator.dupe(u8, raw.wojewodztwo orelse "");
     errdefer allocator.free(voivodeship);
-    const level_time = try dupeOptional(allocator, raw.stan_wody_data_pomiaru);
-    errdefer freeOptional(allocator, level_time);
+    const level_time = try json.optionalText(allocator, raw.stan_wody_data_pomiaru);
+    errdefer {
+        if (level_time) |value| allocator.free(value);
+    }
     if (level_time == null) return error.InvalidData;
-    const status = try allocator.dupe(u8, levelStatus(try optionalFloat(raw.stan_wody), try optionalFloat(raw.stan_ostrzegawczy), try optionalFloat(raw.stan_alarmowy)));
+    const status = try allocator.dupe(u8, levelStatus(try json.optionalFloat(raw.stan_wody), try json.optionalFloat(raw.stan_ostrzegawczy), try json.optionalFloat(raw.stan_alarmowy)));
     errdefer allocator.free(status);
     return .{
         .station_id = station_id,
         .station_name = station_name,
         .river = river,
         .voivodeship = voivodeship,
-        .longitude = try optionalFloat(raw.lon),
-        .latitude = try optionalFloat(raw.lat),
-        .founded_year = try optionalInt32(raw.rok_zalozenia_stacji),
-        .gauge_zero_m = try optionalFloat(raw.rzedna_zerawodowskazu),
-        .river_km = try optionalFloat(raw.kilometr_biegu_rzeki),
-        .warning_level_cm = try optionalFloat(raw.stan_ostrzegawczy),
-        .alarm_level_cm = try optionalFloat(raw.stan_alarmowy),
-        .water_level_cm = try optionalFloat(raw.stan_wody),
+        .longitude = try json.optionalFloat(raw.lon),
+        .latitude = try json.optionalFloat(raw.lat),
+        .founded_year = try json.optionalInt32(raw.rok_zalozenia_stacji),
+        .gauge_zero_m = try json.optionalFloat(raw.rzedna_zerawodowskazu),
+        .river_km = try json.optionalFloat(raw.kilometr_biegu_rzeki),
+        .warning_level_cm = try json.optionalFloat(raw.stan_ostrzegawczy),
+        .alarm_level_cm = try json.optionalFloat(raw.stan_alarmowy),
+        .water_level_cm = try json.optionalFloat(raw.stan_wody),
         .water_level_observed_at = level_time,
-        .water_temperature_c = try optionalFloat(raw.temperatura_wody),
-        .water_temperature_observed_at = try dupeOptional(allocator, raw.temperatura_wody_data_pomiaru),
-        .flow_m3_s = try optionalFloat(raw.przeplyw),
-        .flow_observed_at = try dupeOptional(allocator, raw.przeplyw_data),
-        .ice_phenomenon = try optionalInt32(raw.zjawisko_lodowe),
-        .ice_phenomenon_observed_at = try dupeOptional(allocator, raw.zjawisko_lodowe_data_pomiaru),
-        .overgrowth_phenomenon = try optionalInt32(raw.zjawisko_zarastania),
-        .overgrowth_phenomenon_observed_at = try dupeOptional(allocator, raw.zjawisko_zarastania_data_pomiaru),
+        .water_temperature_c = try json.optionalFloat(raw.temperatura_wody),
+        .water_temperature_observed_at = try json.optionalText(allocator, raw.temperatura_wody_data_pomiaru),
+        .flow_m3_s = try json.optionalFloat(raw.przeplyw),
+        .flow_observed_at = try json.optionalText(allocator, raw.przeplyw_data),
+        .ice_phenomenon = try json.optionalInt32(raw.zjawisko_lodowe),
+        .ice_phenomenon_observed_at = try json.optionalText(allocator, raw.zjawisko_lodowe_data_pomiaru),
+        .overgrowth_phenomenon = try json.optionalInt32(raw.zjawisko_zarastania),
+        .overgrowth_phenomenon_observed_at = try json.optionalText(allocator, raw.zjawisko_zarastania_data_pomiaru),
         .water_level_status = status,
     };
 }
@@ -149,16 +135,6 @@ fn levelStatus(level: ?f64, warning: ?f64, alarm: ?f64) []const u8 {
     if (warning) |threshold| if (value >= threshold) return "warning";
     if (warning == null and alarm == null) return "unknown";
     return "normal";
-}
-
-fn dupeOptional(allocator: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
-    const text = value orelse return null;
-    if (text.len == 0 or std.ascii.eqlIgnoreCase(text, "brak") or std.mem.eql(u8, text, "-")) return null;
-    return try allocator.dupe(u8, text);
-}
-
-fn freeOptional(allocator: std.mem.Allocator, value: ?[]u8) void {
-    if (value) |text| allocator.free(text);
 }
 
 pub fn parseMeteo(allocator: std.mem.Allocator, body: []const u8) Error![]weather_store.Observation {
@@ -191,11 +167,11 @@ fn parseMeteoRaw(allocator: std.mem.Allocator, raw: RawMeteo) Error!weather_stor
         .station_id = station_id,
         .station_name = station_name,
         .observed_at = observed_at,
-        .temperature_c = try optionalFloat(raw.temperatura_powietrza),
-        .wind_speed_m_s = try optionalFloat(raw.wiatr_srednia_predkosc),
-        .wind_direction_deg = try optionalInt(raw.wiatr_kierunek),
-        .relative_humidity_percent = try optionalFloat(raw.wilgotnosc_wzgledna),
-        .precipitation_mm = try optionalFloat(raw.opad_10min),
+        .temperature_c = try json.optionalFloat(raw.temperatura_powietrza),
+        .wind_speed_m_s = try json.optionalFloat(raw.wiatr_srednia_predkosc),
+        .wind_direction_deg = try json.optionalInt(raw.wiatr_kierunek),
+        .relative_humidity_percent = try json.optionalFloat(raw.wilgotnosc_wzgledna),
+        .precipitation_mm = try json.optionalFloat(raw.opad_10min),
         .pressure_hpa = null,
     };
 }
@@ -227,12 +203,12 @@ pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]weather_sto
 }
 
 fn parseRaw(allocator: std.mem.Allocator, raw: RawObservation) Error!weather_store.Observation {
-    const temperature = try optionalFloat(raw.temperatura);
-    const wind_speed = try optionalFloat(raw.predkosc_wiatru);
-    const wind_direction = try optionalInt(raw.kierunek_wiatru);
-    const humidity = try optionalFloat(raw.wilgotnosc_wzgledna);
-    const precipitation = try optionalFloat(raw.suma_opadu);
-    const pressure = try optionalFloat(raw.cisnienie);
+    const temperature = try json.optionalFloat(raw.temperatura);
+    const wind_speed = try json.optionalFloat(raw.predkosc_wiatru);
+    const wind_direction = try json.optionalInt(raw.kierunek_wiatru);
+    const humidity = try json.optionalFloat(raw.wilgotnosc_wzgledna);
+    const precipitation = try json.optionalFloat(raw.suma_opadu);
+    const pressure = try json.optionalFloat(raw.cisnienie);
 
     const station_id = try allocator.dupe(u8, raw.id_stacji);
     errdefer allocator.free(station_id);
@@ -259,26 +235,6 @@ fn observedAt(allocator: std.mem.Allocator, date: []const u8, hour: []const u8) 
     const hour_number = std.fmt.parseInt(u8, hour, 10) catch return error.InvalidData;
     if (hour_number > 23) return error.InvalidData;
     return std.fmt.allocPrint(allocator, "{s}T{d:0>2}:00:00Z", .{ date, hour_number });
-}
-
-fn optionalFloat(value: ?[]const u8) !?f64 {
-    const text = value orelse return null;
-    if (text.len == 0) return null;
-    if (std.ascii.eqlIgnoreCase(text, "brak") or std.mem.eql(u8, text, "-")) return null;
-    return std.fmt.parseFloat(f64, text) catch error.InvalidData;
-}
-
-fn optionalInt(value: ?[]const u8) !?i16 {
-    const text = value orelse return null;
-    if (text.len == 0) return null;
-    if (std.ascii.eqlIgnoreCase(text, "brak") or std.mem.eql(u8, text, "-")) return null;
-    return std.fmt.parseInt(i16, text, 10) catch error.InvalidData;
-}
-
-fn optionalInt32(value: ?[]const u8) !?i32 {
-    const text = value orelse return null;
-    if (text.len == 0 or std.ascii.eqlIgnoreCase(text, "brak") or std.mem.eql(u8, text, "-")) return null;
-    return std.fmt.parseInt(i32, text, 10) catch error.InvalidData;
 }
 
 test "parses hydro station and computes threshold status" {
