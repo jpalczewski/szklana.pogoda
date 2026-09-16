@@ -12,6 +12,8 @@ The weather domain lives in `src/weather/`. `model.zig` owns the observation and
 
 Add a route by creating a handler with the `router.Handler` signature and registering it in the `routes` array in `src/main.zig`. Build `/api/*` handlers that list stations or return one station's history with `historyRoute`/`stationsRoute` in `routes/api.zig` instead of writing them out, and read query parameters with `RequestContext.param`. Keep route matching exact; do not introduce path parameters or wildcard routing without a concrete use case.
 
+Every source file is listed in the `modules` tuple in `src/main.zig`. Add a new file there: the tuple drives both the compile-time analysis of declarations no call path reaches and the collection of tests, and a file missing from it is neither checked by `zig build` nor run by `zig build test`.
+
 ## Build, Test, and Development Commands
 
 - `zig build` — compile the `szklana-pogoda` executable into `zig-out/bin/`.
