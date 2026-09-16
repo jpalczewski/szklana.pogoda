@@ -91,8 +91,6 @@ const routes = [_]router.Route{
     .{ .method = .GET, .path = "/api/memory", .handler = api.memory },
     .{ .method = .GET, .path = "/api/weather/history", .handler = api.weatherHistory },
     .{ .method = .GET, .path = "/api/weather/stations", .handler = api.weatherStations },
-    .{ .method = .GET, .path = "/api/weather/meteo/history", .handler = api.weatherHistory },
-    .{ .method = .GET, .path = "/api/weather/meteo/stations", .handler = api.weatherStations },
     .{ .method = .GET, .path = "/api/hydro/stations", .handler = api.hydroStations },
     .{ .method = .GET, .path = "/api/hydro/history", .handler = api.hydroHistory },
     .{ .method = .GET, .path = "/api/warnings", .handler = api.warningsActive },
