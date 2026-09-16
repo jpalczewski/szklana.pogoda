@@ -69,23 +69,19 @@ pub const Body = struct {
     /// Reads at most `max_body_bytes` in total. A read after the limit is
     /// reached probes the source for one byte, allowing chunked bodies that
     /// exceed the limit to become a 413 instead of silently looking complete.
+    /// Reaching the end of the body is reported as a short read, never as an
+    /// error, which is what `readSliceShort` already does.
     pub fn read(self: *Body, buffer: []u8) AppError!usize {
         if (buffer.len == 0) return 0;
 
         if (self.remaining == 0) {
             var probe: [1]u8 = undefined;
-            const n = self.reader.readSliceShort(&probe) catch |err| switch (err) {
-                error.EndOfStream => return 0,
-                error.ReadFailed => return error.BodyReadFailed,
-            };
+            const n = self.reader.readSliceShort(&probe) catch return error.BodyReadFailed;
             if (n == 0) return 0;
             return error.PayloadTooLarge;
         }
 
-        const n = self.reader.readSliceShort(buffer[0..@min(buffer.len, self.remaining)]) catch |err| switch (err) {
-            error.EndOfStream => return 0,
-            error.ReadFailed => return error.BodyReadFailed,
-        };
+        const n = self.reader.readSliceShort(buffer[0..@min(buffer.len, self.remaining)]) catch return error.BodyReadFailed;
         self.remaining -= n;
         return n;
     }
