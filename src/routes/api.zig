@@ -1,6 +1,7 @@
 const std = @import("std");
 const router = @import("../router.zig");
 const process_memory = @import("../process_memory.zig");
+const warnings = @import("../warnings.zig");
 const weather_store = @import("../weather_store.zig");
 
 pub fn ping(_: *router.App, request: *router.RequestContext) router.AppError!router.Response {
@@ -63,6 +64,109 @@ pub fn hydroHistory(app: *router.App, request: *router.RequestContext) router.Ap
     };
     defer weather_store.Store.deinitHydro(request.allocator, observations);
     return router.Response.jsonValue(request.allocator, .ok, .{ .station_id = station_id, .observations = observations });
+}
+
+const WarningQuery = struct {
+    warning_id: ?[]const u8 = null,
+    source: ?weather_store.WarningSource = null,
+    teryt: ?[]const u8 = null,
+    since: ?[]const u8 = null,
+};
+
+/// Every warning endpoint shares the same query contract: an optional source,
+/// an optional county code and, for history, an optional lower bound.
+fn warningQuery(request: *router.RequestContext) router.AppError!WarningQuery {
+    var query: WarningQuery = .{};
+    if (queryValue(request.query, "id")) |value| {
+        if (value.len == 0) return error.BadRequest;
+        query.warning_id = value;
+    }
+    if (queryValue(request.query, "source")) |value| {
+        query.source = weather_store.WarningSource.fromQuery(value) orelse return error.BadRequest;
+    }
+    if (queryValue(request.query, "teryt")) |value| {
+        if (!isTeryt(value)) return error.BadRequest;
+        query.teryt = value;
+    }
+    if (queryValue(request.query, "since")) |value| {
+        if (value.len == 0) return error.BadRequest;
+        query.since = value;
+    }
+    return query;
+}
+
+fn isTeryt(value: []const u8) bool {
+    if (value.len != 4) return false;
+    for (value) |byte| {
+        if (!std.ascii.isDigit(byte)) return false;
+    }
+    return true;
+}
+
+fn currentLocalTime(app: *router.App, allocator: std.mem.Allocator) router.AppError![]u8 {
+    const io = app.io orelse return error.WeatherStoreUnavailable;
+    return warnings.localNow(allocator, io) catch |err| {
+        std.log.err("reading the wall clock failed: {t}", .{err});
+        return error.WeatherStoreUnavailable;
+    };
+}
+
+/// Warnings IMGW still lists as valid: the newest revision of each one.
+pub fn warningsActive(app: *router.App, request: *router.RequestContext) router.AppError!router.Response {
+    const store = app.weather_store orelse return error.WeatherStoreUnavailable;
+    const query = try warningQuery(request);
+    const now = try currentLocalTime(app, request.allocator);
+    defer request.allocator.free(now);
+
+    const items = store.activeWarnings(request.allocator, .{
+        .warning_id = query.warning_id,
+        .source = query.source,
+        .teryt = query.teryt,
+        .effective_to_gte = now,
+        .latest_only = true,
+    }) catch |err| {
+        std.log.err("warning query failed: {t}", .{err});
+        return error.WeatherStoreUnavailable;
+    };
+    defer weather_store.Store.deinitWarnings(request.allocator, items);
+    return router.Response.jsonValue(request.allocator, .ok, .{ .warnings = items });
+}
+
+/// Every stored revision, expired warnings included.
+pub fn warningsHistory(app: *router.App, request: *router.RequestContext) router.AppError!router.Response {
+    const store = app.weather_store orelse return error.WeatherStoreUnavailable;
+    const query = try warningQuery(request);
+
+    const items = store.warningHistory(request.allocator, .{
+        .warning_id = query.warning_id,
+        .source = query.source,
+        .teryt = query.teryt,
+        .effective_to_gte = query.since,
+    }) catch |err| {
+        std.log.err("warning history unavailable: {t}", .{err});
+        return error.WeatherStoreUnavailable;
+    };
+    defer weather_store.Store.deinitWarnings(request.allocator, items);
+    return router.Response.jsonValue(request.allocator, .ok, .{ .warnings = items });
+}
+
+/// The revision chain of a single warning.
+pub fn warningsRevisions(app: *router.App, request: *router.RequestContext) router.AppError!router.Response {
+    const store = app.weather_store orelse return error.WeatherStoreUnavailable;
+    const query = try warningQuery(request);
+    const source = query.source orelse return error.BadRequest;
+    const warning_id = query.warning_id orelse return error.BadRequest;
+
+    const items = store.warningRevisions(request.allocator, source, warning_id) catch |err| {
+        std.log.err("warning revisions unavailable: {t}", .{err});
+        return error.WeatherStoreUnavailable;
+    };
+    defer weather_store.Store.deinitWarnings(request.allocator, items);
+    return router.Response.jsonValue(request.allocator, .ok, .{
+        .source = source,
+        .warning_id = warning_id,
+        .revisions = items,
+    });
 }
 
 fn queryValue(query: ?[]const u8, name: []const u8) ?[]const u8 {
@@ -216,4 +320,157 @@ test "weather stations returns city to station mapping" {
         "{\"stations\":[{\"station_id\":\"12424\",\"station_name\":\"Wrocław\",\"last_observed_at\":\"2026-09-16T17:00:00Z\"}]}",
         response.body,
     );
+}
+
+fn warningFixture() weather_store.Warning {
+    return .{
+        .source = .meteo,
+        .warning_id = "Sk1",
+        .event = "Silny wiatr",
+        .severity = 2,
+        .probability_percent = 70,
+        .office = "CBPM",
+        .published_at = "2026-09-16 11:43:00",
+        .effective_from = "2026-09-16 23:00:00",
+        .effective_to = "9999-12-31 23:59:59",
+        .content = "Silny wiatr.",
+        .areas = &.{.{ .teryt = "2415" }},
+    };
+}
+
+test "warnings endpoint returns the active set as JSON" {
+    var store = try weather_store.Store.initMemory();
+    defer store.deinit();
+    _ = try store.recordWarnings(&.{warningFixture()}, "2026-09-16 23:05:00");
+
+    var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store, .io = std.testing.io };
+    var request: router.RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .GET,
+        .path = "/api/warnings",
+        .query = null,
+        .headers = &.{},
+        .body = null,
+    };
+    const response = try warningsActive(&app, &request);
+    defer std.testing.allocator.free(response.body);
+    try std.testing.expectEqual(.ok, response.status);
+    try std.testing.expectEqualStrings(
+        "{\"warnings\":[{\"source\":\"meteo\",\"warning_id\":\"Sk1\",\"revision\":1," ++
+            "\"event\":\"Silny wiatr\",\"severity\":2,\"probability_percent\":70,\"office\":\"CBPM\"," ++
+            "\"published_at\":\"2026-09-16 11:43:00\",\"effective_from\":\"2026-09-16 23:00:00\"," ++
+            "\"effective_to\":\"9999-12-31 23:59:59\",\"content\":\"Silny wiatr.\",\"comment\":null," ++
+            "\"first_seen_at\":\"2026-09-16 23:05:00\",\"last_seen_at\":\"2026-09-16 23:05:00\"," ++
+            "\"areas\":[{\"teryt\":\"2415\",\"voivodeship\":null,\"description\":null,\"basin_code\":null}]}]}",
+        response.body,
+    );
+}
+
+test "warnings endpoint filters by TERYT and reports an empty result" {
+    var store = try weather_store.Store.initMemory();
+    defer store.deinit();
+    _ = try store.recordWarnings(&.{warningFixture()}, "2026-09-16 23:05:00");
+
+    var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store, .io = std.testing.io };
+    var request: router.RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .GET,
+        .path = "/api/warnings",
+        .query = "teryt=9999",
+        .headers = &.{},
+        .body = null,
+    };
+    const response = try warningsActive(&app, &request);
+    defer std.testing.allocator.free(response.body);
+    try std.testing.expectEqualStrings("{\"warnings\":[]}", response.body);
+}
+
+test "warnings endpoint rejects malformed query values" {
+    var store = try weather_store.Store.initMemory();
+    defer store.deinit();
+    var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store, .io = std.testing.io };
+    var request: router.RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .GET,
+        .path = "/api/warnings",
+        .query = "source=meteorologiczne",
+        .headers = &.{},
+        .body = null,
+    };
+    try std.testing.expectError(error.BadRequest, warningsActive(&app, &request));
+
+    request.query = "teryt=24";
+    try std.testing.expectError(error.BadRequest, warningsActive(&app, &request));
+
+    request.query = "teryt=24a5";
+    try std.testing.expectError(error.BadRequest, warningsActive(&app, &request));
+
+    request.query = "since=";
+    try std.testing.expectError(error.BadRequest, warningsHistory(&app, &request));
+}
+
+test "warnings revisions require a source and an identifier" {
+    var store = try weather_store.Store.initMemory();
+    defer store.deinit();
+    _ = try store.recordWarnings(&.{warningFixture()}, "2026-09-16 23:05:00");
+
+    var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store, .io = std.testing.io };
+    var request: router.RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .GET,
+        .path = "/api/warnings/revisions",
+        .query = "source=meteo",
+        .headers = &.{},
+        .body = null,
+    };
+    try std.testing.expectError(error.BadRequest, warningsRevisions(&app, &request));
+
+    request.query = "id=Sk1";
+    try std.testing.expectError(error.BadRequest, warningsRevisions(&app, &request));
+
+    request.query = "source=meteo&id=Sk1";
+    const response = try warningsRevisions(&app, &request);
+    defer std.testing.allocator.free(response.body);
+    try std.testing.expectEqual(.ok, response.status);
+    try std.testing.expect(std.mem.startsWith(u8, response.body, "{\"source\":\"meteo\",\"warning_id\":\"Sk1\",\"revisions\":["));
+}
+
+test "warnings history keeps expired warnings" {
+    var store = try weather_store.Store.initMemory();
+    defer store.deinit();
+    var expired = warningFixture();
+    expired.warning_id = "Sk0";
+    expired.effective_to = "2020-01-01 00:00:00";
+    _ = try store.recordWarnings(&.{expired}, "2020-01-01 00:05:00");
+
+    var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store, .io = std.testing.io };
+    var request: router.RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .GET,
+        .path = "/api/warnings",
+        .query = null,
+        .headers = &.{},
+        .body = null,
+    };
+    const active = try warningsActive(&app, &request);
+    defer std.testing.allocator.free(active.body);
+    try std.testing.expectEqualStrings("{\"warnings\":[]}", active.body);
+
+    request.path = "/api/warnings/history";
+    const history = try warningsHistory(&app, &request);
+    defer std.testing.allocator.free(history.body);
+    try std.testing.expect(std.mem.indexOf(u8, history.body, "\"warning_id\":\"Sk0\"") != null);
+}
+
+test "warnings endpoint needs a store" {
+    var app: router.App = .{ .max_body_bytes = 16 };
+    var request: router.RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .GET,
+        .path = "/api/warnings",
+        .query = null,
+        .headers = &.{},
+        .body = null,
+    };
+    try std.testing.expectError(error.WeatherStoreUnavailable, warningsActive(&app, &request));
 }

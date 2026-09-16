@@ -86,6 +86,9 @@ const routes = [_]router.Route{
     .{ .method = .GET, .path = "/api/weather/meteo/stations", .handler = api.weatherStations },
     .{ .method = .GET, .path = "/api/hydro/stations", .handler = api.hydroStations },
     .{ .method = .GET, .path = "/api/hydro/history", .handler = api.hydroHistory },
+    .{ .method = .GET, .path = "/api/warnings", .handler = api.warningsActive },
+    .{ .method = .GET, .path = "/api/warnings/history", .handler = api.warningsHistory },
+    .{ .method = .GET, .path = "/api/warnings/revisions", .handler = api.warningsRevisions },
 };
 
 const metrics_routes = [_]router.Route{
@@ -116,7 +119,7 @@ pub fn main(init: std.process.Init) !void {
 
     var metrics_registry = metrics.Registry.init(gpa);
     defer metrics_registry.deinit();
-    var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry, .weather_store = &observations };
+    var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry, .weather_store = &observations, .io = io };
     var metrics_app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry };
     var connections: Io.Group = .init;
     defer connections.await(io) catch {};

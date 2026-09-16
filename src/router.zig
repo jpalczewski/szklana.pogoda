@@ -9,6 +9,9 @@ pub const App = struct {
     trust_proxy: bool = false,
     metrics: ?*metrics.Registry = null,
     weather_store: ?*weather_store.Store = null,
+    /// Wall clock used by handlers that need "now"; left null by tests that
+    /// do not exercise time dependent paths.
+    io: ?Io = null,
 };
 
 pub const AppError = std.mem.Allocator.Error || error{
