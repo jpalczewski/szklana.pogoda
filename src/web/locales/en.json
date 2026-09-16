@@ -1,0 +1,15 @@
+{
+  "html_lang": "en",
+  "page_title": "szklana.pogoda",
+  "intro": "Welcome to the portal. The backend responds to a ping:",
+  "ping_button": "Ping",
+  "ready": "ready",
+  "loading": "…",
+  "http_error": "error: HTTP ",
+  "connection_error": "connection error",
+  "memory_title": "Process memory",
+  "memory_rss": "Resident memory:",
+  "memory_virtual": "Virtual memory:",
+  "memory_refresh": "Refresh",
+  "memory_unavailable": "memory statistics unavailable"
+}

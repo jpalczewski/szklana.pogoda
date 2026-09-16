@@ -1,0 +1,15 @@
+{
+  "html_lang": "pl",
+  "page_title": "szklana.pogoda",
+  "intro": "Witaj w portalu. Backend odpowiada na ping:",
+  "ping_button": "Ping",
+  "ready": "gotowy",
+  "loading": "…",
+  "http_error": "błąd: HTTP ",
+  "connection_error": "błąd połączenia",
+  "memory_title": "Pamięć procesu",
+  "memory_rss": "Pamięć rezydentna:",
+  "memory_virtual": "Pamięć wirtualna:",
+  "memory_refresh": "Odśwież",
+  "memory_unavailable": "nie można odczytać pamięci"
+}

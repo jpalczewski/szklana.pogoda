@@ -1,21 +1,39 @@
 const std = @import("std");
-const http = std.http;
 const Io = std.Io;
 const net = Io.net;
 
-// Defaults; every one of these is overridable via an environment variable
-// of the same name (see envInt/envStr below), so the server can be tuned
-// without a rebuild.
+const router = @import("router.zig");
+const server = @import("server.zig");
+const api = @import("routes/api.zig");
+const pages = @import("routes/pages.zig");
+const app_log = @import("app_log.zig");
+const metrics = @import("metrics.zig");
+const metrics_route = @import("routes/metrics.zig");
+
+pub const std_options: std.Options = .{
+    .logFn = app_log.logFn,
+};
+
 const default_port: u16 = 8080;
+const default_metrics_port: u16 = 9090;
 const default_host = "0.0.0.0";
 const default_max_body_bytes: usize = 16 * 1024;
-// Connections are I/O-bound (mostly waiting on the network), so allowing
-// several per CPU core keeps throughput up without letting an unbounded
-// number of 16 MiB thread stacks pile up under a connection flood.
 const default_max_connections_per_cpu: usize = 4;
 
-const index_html = @embedFile("web/index.html");
-const style_css = @embedFile("web/98.css");
+const routes = [_]router.Route{
+    .{ .method = .GET, .path = "/", .handler = pages.home },
+    .{ .method = .GET, .path = "/en/", .handler = pages.home_en },
+    .{ .method = .GET, .path = "/98.css", .handler = pages.style },
+    .{ .method = .GET, .path = "/app.css", .handler = pages.app_style },
+    .{ .method = .GET, .path = "/app.js", .handler = pages.app_script },
+    .{ .method = .GET, .path = "/alpine.js", .handler = pages.alpine_script },
+    .{ .method = .POST, .path = "/api/ping", .handler = api.ping },
+    .{ .method = .GET, .path = "/api/memory", .handler = api.memory },
+};
+
+const metrics_routes = [_]router.Route{
+    .{ .method = .GET, .path = "/metrics", .handler = metrics_route.metrics },
+};
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -23,50 +41,57 @@ pub fn main(init: std.process.Init) !void {
 
     const host = envStr(environ, "HOST", default_host);
     const port = try envInt(u16, environ, "PORT", default_port);
+    const metrics_port = try envInt(u16, environ, "METRICS_PORT", default_metrics_port);
     const max_body_bytes = try envInt(usize, environ, "MAX_BODY_BYTES", default_max_body_bytes);
     const max_connections_per_cpu = try envInt(usize, environ, "MAX_CONNECTIONS_PER_CPU", default_max_connections_per_cpu);
+    const trust_proxy = try envBool(environ, "TRUST_PROXY", false);
 
-    // init.io's default Threaded instance has an unlimited concurrent_limit,
-    // so Group.concurrent below would spawn one thread per connection with
-    // no cap. Build our own with an explicit limit instead.
     const cpu_count = std.Thread.getCpuCount() catch 1;
     var threaded: Io.Threaded = .init(gpa, .{
-        .concurrent_limit = .limited(cpu_count * max_connections_per_cpu),
+        .concurrent_limit = .limited(cpu_count * max_connections_per_cpu + 2),
     });
     defer threaded.deinit();
     const io = threaded.io();
 
     var address = try net.IpAddress.parseIp4(host, port);
-    var server = try address.listen(io, .{ .reuse_address = true });
-    defer server.deinit(io);
+    var listener = try address.listen(io, .{ .reuse_address = true });
+    defer listener.deinit(io);
+    var metrics_address = try net.IpAddress.parseIp4(host, metrics_port);
+    var metrics_listener = try metrics_address.listen(io, .{ .reuse_address = true });
+    defer metrics_listener.deinit(io);
 
-    // Tasks release their resources as soon as each one finishes, not when
-    // the group as a whole is awaited, so it's fine to keep adding
-    // connections to this one long-lived group for the life of the process.
+    var metrics_registry = metrics.Registry.init(gpa);
+    defer metrics_registry.deinit();
+    var app: router.App = .{ .max_body_bytes = max_body_bytes, .trust_proxy = trust_proxy, .metrics = &metrics_registry };
+    var metrics_app: router.App = .{ .max_body_bytes = max_body_bytes, .trust_proxy = trust_proxy, .metrics = &metrics_registry };
     var connections: Io.Group = .init;
     defer connections.await(io) catch {};
+    var listeners: Io.Group = .init;
+    defer listeners.await(io) catch {};
+
+    const app_listener_config: server.ListenerConfig = .{
+        .name = "application",
+        .listener = &listener,
+        .app = &app,
+        .routes = &routes,
+        .instrument_requests = true,
+    };
+    const metrics_listener_config: server.ListenerConfig = .{
+        .name = "metrics",
+        .listener = &metrics_listener,
+        .app = &metrics_app,
+        .routes = &metrics_routes,
+        .instrument_requests = false,
+    };
 
     std.log.info("szklana.pogoda listening on {s}:{d}", .{ host, port });
+    std.log.info("metrics listening on {s}:{d}", .{ host, metrics_port });
 
-    while (true) {
-        const stream = server.accept(io) catch |err| {
-            std.log.err("accept failed: {t}", .{err});
-            continue;
-        };
-        // .concurrent (rather than .async) asks the Io implementation for
-        // real concurrency, so accept() keeps looping while this connection
-        // is blocked on I/O elsewhere. init.io defaults to std.Io.Threaded,
-        // which supports it; fall back to handling inline if it can't.
-        connections.concurrent(io, handleConnectionTask, .{ gpa, io, stream, max_body_bytes }) catch |err| {
-            std.log.err("spawn failed, handling inline: {t}", .{err});
-            handleConnectionTask(gpa, io, stream, max_body_bytes);
-        };
-    }
+    try listeners.concurrent(io, server.serve, .{ gpa, io, &app_listener_config, &connections });
+    try listeners.concurrent(io, server.serve, .{ gpa, io, &metrics_listener_config, &connections });
+    try listeners.await(io);
 }
 
-/// Reads `name` from the environment as an integer, falling back to
-/// `default` when unset. An invalid value is a startup-config error, not
-/// silently ignored.
 fn envInt(comptime T: type, environ: *const std.process.Environ.Map, name: []const u8, default: T) !T {
     const raw = environ.get(name) orelse return default;
     return std.fmt.parseInt(T, raw, 10) catch |err| {
@@ -79,86 +104,10 @@ fn envStr(environ: *const std.process.Environ.Map, name: []const u8, default: []
     return environ.get(name) orelse default;
 }
 
-fn handleConnectionTask(gpa: std.mem.Allocator, io: Io, stream: net.Stream, max_body_bytes: usize) void {
-    handleConnection(gpa, io, stream, max_body_bytes) catch |err| {
-        std.log.err("connection error: {t}", .{err});
-    };
-}
-
-fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, max_body_bytes: usize) !void {
-    var stream = stream_in;
-    defer stream.close(io);
-
-    var send_buffer: [8192]u8 = undefined;
-    var recv_buffer: [8192]u8 = undefined;
-    var connection_reader = stream.reader(io, &recv_buffer);
-    var connection_writer = stream.writer(io, &send_buffer);
-    var server: http.Server = .init(&connection_reader.interface, &connection_writer.interface);
-
-    var request = server.receiveHead() catch |err| switch (err) {
-        error.HttpConnectionClosing => return,
-        else => return err,
-    };
-
-    // request.head.target aliases the connection reader's buffer. Reading
-    // the body below tosses/refills that same buffer, so target must be
-    // copied out before any body read or its bytes get overwritten.
-    const method = request.head.method;
-    const target = try gpa.dupe(u8, request.head.target);
-    defer gpa.free(target);
-
-    // A request with neither content-length nor chunked transfer-encoding is
-    // unframed — std.http's bodyReader falls back to the raw connection
-    // reader in that case (reads until the peer closes), which would hang
-    // against a keep-alive client still waiting on a response. Treat
-    // unframed as "no body" instead of ever reading from that reader.
-    const has_framed_body = request.head.content_length != null or
-        request.head.transfer_encoding == .chunked;
-
-    if (has_framed_body) {
-        const body_reader = request.readerExpectContinue(&.{}) catch |err| {
-            try request.respond("bad request", .{ .status = .bad_request, .keep_alive = false });
-            return err;
-        };
-        const body = body_reader.allocRemaining(gpa, Io.Limit.limited(max_body_bytes)) catch {
-            try request.respond("payload too large", .{ .status = .payload_too_large, .keep_alive = false });
-            return;
-        };
-        gpa.free(body);
-    }
-
-    if (method == .GET and std.mem.eql(u8, target, "/")) {
-        try request.respond(index_html, .{
-            .status = .ok,
-            .keep_alive = false,
-            .extra_headers = &.{
-                .{ .name = "content-type", .value = "text/html; charset=utf-8" },
-            },
-        });
-        return;
-    }
-
-    if (method == .GET and std.mem.eql(u8, target, "/98.css")) {
-        try request.respond(style_css, .{
-            .status = .ok,
-            .keep_alive = false,
-            .extra_headers = &.{
-                .{ .name = "content-type", .value = "text/css; charset=utf-8" },
-            },
-        });
-        return;
-    }
-
-    if (method == .POST and std.mem.eql(u8, target, "/api/ping")) {
-        try request.respond("pong", .{
-            .status = .ok,
-            .keep_alive = false,
-            .extra_headers = &.{
-                .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
-            },
-        });
-        return;
-    }
-
-    try request.respond("not found", .{ .status = .not_found, .keep_alive = false });
+fn envBool(environ: *const std.process.Environ.Map, name: []const u8, default: bool) !bool {
+    const raw = environ.get(name) orelse return default;
+    if (std.ascii.eqlIgnoreCase(raw, "true")) return true;
+    if (std.ascii.eqlIgnoreCase(raw, "false")) return false;
+    std.log.err("invalid {s}=\"{s}\": expected true or false", .{ name, raw });
+    return error.InvalidBoolean;
 }

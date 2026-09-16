@@ -1,0 +1,46 @@
+body {
+  align-items: flex-start;
+  background: #008080;
+  display: flex;
+  justify-content: center;
+  margin: 0;
+  min-height: 100vh;
+  padding: 4rem 1rem;
+}
+
+.app-window {
+  width: min(360px, 100%);
+}
+
+.language-switcher {
+  margin: 0 0 1rem;
+  text-align: right;
+}
+
+.memory-panel {
+  margin-top: 1rem;
+}
+
+.memory-status {
+  margin: 0.5rem 0;
+}
+
+.memory-stats {
+  display: grid;
+  gap: 0.25rem 1rem;
+  grid-template-columns: 1fr auto;
+  margin: 0.5rem 0 1rem;
+}
+
+.memory-stats dt,
+.memory-stats dd {
+  margin: 0;
+}
+
+.memory-stats dd {
+  text-align: right;
+}
+
+[x-cloak] {
+  display: none !important;
+}
