@@ -16,55 +16,59 @@ pub fn memory(_: *router.App, request: *router.RequestContext) router.AppError!r
     return router.Response.jsonValue(request.allocator, .ok, usage);
 }
 
-pub fn weatherHistory(app: *router.App, request: *router.RequestContext) router.AppError!router.Response {
-    const store = app.weather_store orelse return error.WeatherStoreUnavailable;
-    const station_id = queryValue(request.query, "station_id") orelse return error.BadRequest;
-    if (station_id.len == 0) return error.BadRequest;
-    const since = queryValue(request.query, "since") orelse "";
-
-    const observations = store.history(request.allocator, station_id, since) catch |err| {
-        std.log.err("weather history unavailable: {t}", .{err});
-        return error.WeatherStoreUnavailable;
-    };
-    defer weather.model.deinitObservations(request.allocator, observations);
-    return router.Response.jsonValue(request.allocator, .ok, .{
-        .station_id = station_id,
-        .observations = observations,
-    });
+/// The stations endpoints answer with the newest reading per station; only the
+/// store query, the model type and the released fields differ.
+fn stationsRoute(
+    comptime T: type,
+    comptime list: anytype,
+    comptime deinit_items: fn (std.mem.Allocator, []T) void,
+    comptime what: []const u8,
+) router.Handler {
+    return struct {
+        fn handle(app: *router.App, request: *router.RequestContext) router.AppError!router.Response {
+            const store = app.weather_store orelse return error.WeatherStoreUnavailable;
+            const stations = list(store, request.allocator) catch |err| {
+                std.log.err("{s} unavailable: {t}", .{ what, err });
+                return error.WeatherStoreUnavailable;
+            };
+            defer deinit_items(request.allocator, stations);
+            return router.Response.jsonValue(request.allocator, .ok, .{ .stations = stations });
+        }
+    }.handle;
 }
 
-pub fn weatherStations(app: *router.App, request: *router.RequestContext) router.AppError!router.Response {
-    const store = app.weather_store orelse return error.WeatherStoreUnavailable;
-    const stations = store.stations(request.allocator) catch |err| {
-        std.log.err("weather stations unavailable: {t}", .{err});
-        return error.WeatherStoreUnavailable;
-    };
-    defer weather.model.deinitStations(request.allocator, stations);
-    return router.Response.jsonValue(request.allocator, .ok, .{ .stations = stations });
+/// The history endpoints take a station id and an optional lower bound; only the
+/// store query, the model type and the released fields differ.
+fn historyRoute(
+    comptime T: type,
+    comptime list: anytype,
+    comptime deinit_items: fn (std.mem.Allocator, []T) void,
+    comptime what: []const u8,
+) router.Handler {
+    return struct {
+        fn handle(app: *router.App, request: *router.RequestContext) router.AppError!router.Response {
+            const store = app.weather_store orelse return error.WeatherStoreUnavailable;
+            const station_id = request.param("station_id") orelse return error.BadRequest;
+            if (station_id.len == 0) return error.BadRequest;
+            const since = request.param("since") orelse "";
+
+            const observations = list(store, request.allocator, station_id, since) catch |err| {
+                std.log.err("{s} unavailable: {t}", .{ what, err });
+                return error.WeatherStoreUnavailable;
+            };
+            defer deinit_items(request.allocator, observations);
+            return router.Response.jsonValue(request.allocator, .ok, .{
+                .station_id = station_id,
+                .observations = observations,
+            });
+        }
+    }.handle;
 }
 
-pub fn hydroStations(app: *router.App, request: *router.RequestContext) router.AppError!router.Response {
-    const store = app.weather_store orelse return error.WeatherStoreUnavailable;
-    const stations = store.hydroStations(request.allocator) catch |err| {
-        std.log.err("hydro stations unavailable: {t}", .{err});
-        return error.WeatherStoreUnavailable;
-    };
-    defer weather.model.deinitHydro(request.allocator, stations);
-    return router.Response.jsonValue(request.allocator, .ok, .{ .stations = stations });
-}
-
-pub fn hydroHistory(app: *router.App, request: *router.RequestContext) router.AppError!router.Response {
-    const store = app.weather_store orelse return error.WeatherStoreUnavailable;
-    const station_id = queryValue(request.query, "station_id") orelse return error.BadRequest;
-    if (station_id.len == 0) return error.BadRequest;
-    const since = queryValue(request.query, "since") orelse "";
-    const observations = store.hydroHistory(request.allocator, station_id, since) catch |err| {
-        std.log.err("hydro history unavailable: {t}", .{err});
-        return error.WeatherStoreUnavailable;
-    };
-    defer weather.model.deinitHydro(request.allocator, observations);
-    return router.Response.jsonValue(request.allocator, .ok, .{ .station_id = station_id, .observations = observations });
-}
+pub const weatherHistory = historyRoute(weather.Observation, weather.Store.history, weather.model.deinitObservations, "weather history");
+pub const weatherStations = stationsRoute(weather.Station, weather.Store.stations, weather.model.deinitStations, "weather stations");
+pub const hydroStations = stationsRoute(weather.HydroStation, weather.Store.hydroStations, weather.model.deinitHydro, "hydro stations");
+pub const hydroHistory = historyRoute(weather.HydroObservation, weather.Store.hydroHistory, weather.model.deinitHydro, "hydro history");
 
 const WarningQuery = struct {
     warning_id: ?[]const u8 = null,
@@ -77,18 +81,18 @@ const WarningQuery = struct {
 /// an optional county code and, for history, an optional lower bound.
 fn warningQuery(request: *router.RequestContext) router.AppError!WarningQuery {
     var query: WarningQuery = .{};
-    if (queryValue(request.query, "id")) |value| {
+    if (request.param("id")) |value| {
         if (value.len == 0) return error.BadRequest;
         query.warning_id = value;
     }
-    if (queryValue(request.query, "source")) |value| {
+    if (request.param("source")) |value| {
         query.source = weather.WarningSource.fromQuery(value) orelse return error.BadRequest;
     }
-    if (queryValue(request.query, "teryt")) |value| {
+    if (request.param("teryt")) |value| {
         if (!isTeryt(value)) return error.BadRequest;
         query.teryt = value;
     }
-    if (queryValue(request.query, "since")) |value| {
+    if (request.param("since")) |value| {
         if (value.len == 0) return error.BadRequest;
         query.since = value;
     }
@@ -167,15 +171,6 @@ pub fn warningsRevisions(app: *router.App, request: *router.RequestContext) rout
         .warning_id = warning_id,
         .revisions = items,
     });
-}
-
-fn queryValue(query: ?[]const u8, name: []const u8) ?[]const u8 {
-    var pairs = std.mem.splitScalar(u8, query orelse return null, '&');
-    while (pairs.next()) |pair| {
-        const separator = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
-        if (std.mem.eql(u8, pair[0..separator], name)) return pair[separator + 1 ..];
-    }
-    return null;
 }
 
 test "ping endpoint returns JSON status" {

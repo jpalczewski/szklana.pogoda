@@ -118,6 +118,18 @@ pub const RequestContext = struct {
         }
         return null;
     }
+
+    /// Looks up the first query parameter called `name`. Values are returned
+    /// verbatim: the keys the API accepts are ASCII identifiers and their values
+    /// are handed to the store as they arrive.
+    pub fn param(self: *const RequestContext, name: []const u8) ?[]const u8 {
+        var pairs = std.mem.splitScalar(u8, self.query orelse return null, '&');
+        while (pairs.next()) |pair| {
+            const separator = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+            if (std.mem.eql(u8, pair[0..separator], name)) return pair[separator + 1 ..];
+        }
+        return null;
+    }
 };
 
 pub const Handler = *const fn (*App, *RequestContext) AppError!Response;
@@ -288,4 +300,25 @@ test "request context looks up headers without case sensitivity" {
         .body = null,
     };
     try std.testing.expectEqualStrings("application/json", request.header("content-type").?);
+}
+
+test "request context reads query parameters" {
+    const request: RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .GET,
+        .path = "/api/weather/history",
+        .query = "station_id=12424&since=2026-09-16T00:00:00Z&empty=&flag",
+        .headers = &.{},
+        .body = null,
+    };
+    try std.testing.expectEqualStrings("12424", request.param("station_id").?);
+    try std.testing.expectEqualStrings("2026-09-16T00:00:00Z", request.param("since").?);
+    try std.testing.expectEqualStrings("", request.param("empty").?);
+    try std.testing.expect(request.param("flag") == null);
+    try std.testing.expect(request.param("missing") == null);
+    // A parameter name must match whole, not as a prefix.
+    try std.testing.expect(request.param("station") == null);
+
+    const without_query: RequestContext = .{ .allocator = std.testing.allocator, .method = .GET, .path = "/api/ping", .query = null, .headers = &.{}, .body = null };
+    try std.testing.expect(without_query.param("station_id") == null);
 }
