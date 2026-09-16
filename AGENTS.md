@@ -24,6 +24,14 @@ Every source file is listed in the `modules` tuple in `src/main.zig`. Add a new 
 
 The server accepts `HOST`, `PORT`, `MAX_BODY_BYTES`, and `MAX_CONNECTIONS_PER_CPU` environment variables. `HOST` currently expects an IPv4 address.
 
+In the sandboxed agent environment the Zig global cache (`~/.cache/zig`) is not writable, so `zig build` and `zig build test` fail with `PermissionDenied` and `failed to check cache`. Point the cache into the workspace instead:
+
+```sh
+ZIG_GLOBAL_CACHE_DIR="$PWD/.zig-global-cache" zig build test
+```
+
+That directory is scratch space, not source: delete it before handing off or committing, and never add it to the repository.
+
 ## Coding Style & Naming Conventions
 
 Use `zig fmt`; do not hand-maintain formatting. Follow Zig conventions: four-space indentation, `snake_case` for functions and local variables, `PascalCase` for types, and lowercase filenames such as `routes/api.zig`.
