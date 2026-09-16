@@ -83,7 +83,9 @@ pub fn deinitStations(allocator: std.mem.Allocator, items: []Station) void {
     allocator.free(items);
 }
 
-pub fn deinitHydro(allocator: std.mem.Allocator, items: []HydroObservation) void {
+/// Releases the items of a decoded batch without releasing the slice itself, so
+/// a decoder can clean up a partial batch.
+pub fn deinitHydroItems(allocator: std.mem.Allocator, items: []HydroObservation) void {
     for (items) |item| {
         allocator.free(item.station_id);
         allocator.free(item.station_name);
@@ -94,5 +96,9 @@ pub fn deinitHydro(allocator: std.mem.Allocator, items: []HydroObservation) void
             if (@field(item, field)) |value| allocator.free(value);
         }
     }
+}
+
+pub fn deinitHydro(allocator: std.mem.Allocator, items: []HydroObservation) void {
+    deinitHydroItems(allocator, items);
     allocator.free(items);
 }

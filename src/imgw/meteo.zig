@@ -1,8 +1,6 @@
 const std = @import("std");
-const Io = std.Io;
 const value = @import("value.zig");
-const http = @import("http.zig");
-const records = @import("records.zig");
+const product = @import("product.zig");
 const model = @import("../weather/model.zig");
 
 pub const Error = value.Error;
@@ -26,23 +24,12 @@ const Raw = struct {
     opad_10min_data: ?[]const u8 = null, // precipitation timestamp
 };
 
-pub fn fetch(allocator: std.mem.Allocator, io: Io) Error![]model.Observation {
-    return http.fetchParsed([]model.Observation, allocator, io, endpoint, parse);
-}
-
 /// Meteo records stand alone, so one malformed station is skipped instead of
 /// discarding the whole response.
-pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]model.Observation {
-    return records.decode(
-        model.Observation,
-        Raw,
-        parseRaw,
-        model.deinitObservationItems,
-        allocator,
-        body,
-        .{ .label = "meteo" },
-    );
-}
+const Source = product.Product(model.Observation, Raw, endpoint, parseRaw, model.deinitObservationItems, .{ .label = "meteo" });
+
+pub const parse = Source.parse;
+pub const fetch = Source.fetch;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.Observation {
     const station_id = try value.presentText(allocator, raw.kod_stacji);

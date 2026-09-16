@@ -1,8 +1,6 @@
 const std = @import("std");
-const Io = std.Io;
 const value = @import("value.zig");
-const http = @import("http.zig");
-const records = @import("records.zig");
+const product = @import("product.zig");
 const model = @import("../weather/model.zig");
 
 pub const Error = value.Error;
@@ -38,23 +36,12 @@ const Raw = struct {
     zjawisko_zarastania_data_pomiaru: ?[]const u8 = null, // overgrowth phenomenon timestamp
 };
 
-pub fn fetch(allocator: std.mem.Allocator, io: Io) Error![]model.HydroObservation {
-    return http.fetchParsed([]model.HydroObservation, allocator, io, endpoint, parse);
-}
+/// A station without a water-level timestamp carries no usable measurement, so
+/// it is skipped rather than stored half-empty.
+const Source = product.Product(model.HydroObservation, Raw, endpoint, parseRaw, model.deinitHydroItems, .{ .label = "hydro" });
 
-/// A station without a water-level timestamp carries no usable measurement,
-/// so it is skipped rather than stored half-empty.
-pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]model.HydroObservation {
-    return records.decode(
-        model.HydroObservation,
-        Raw,
-        parseRaw,
-        model.deinitHydro,
-        allocator,
-        body,
-        .{ .label = "hydro" },
-    );
-}
+pub const parse = Source.parse;
+pub const fetch = Source.fetch;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.HydroObservation {
     const station_id = try value.presentText(allocator, raw.id_stacji);

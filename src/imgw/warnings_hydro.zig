@@ -1,8 +1,6 @@
 const std = @import("std");
-const Io = std.Io;
 const value = @import("value.zig");
-const http = @import("http.zig");
-const records = @import("records.zig");
+const product = @import("product.zig");
 const fields = @import("warning_fields.zig");
 const warnings = @import("../warnings.zig");
 
@@ -36,21 +34,12 @@ const RawArea = struct {
     kod_zlewni: ?[]const []const u8 = null, // basin codes
 };
 
-pub fn fetch(allocator: std.mem.Allocator, io: Io) Error![]warnings.Warning {
-    return http.fetchParsed([]warnings.Warning, allocator, io, endpoint, parse);
-}
+/// A malformed hydrological warning is skipped rather than discarding the
+/// whole response.
+const Source = product.Product(warnings.Warning, Raw, endpoint, parseRaw, warnings.deinitWarningItems, .{ .label = "hydro warning" });
 
-pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]warnings.Warning {
-    return records.decode(
-        warnings.Warning,
-        Raw,
-        parseRaw,
-        warnings.deinitWarningItems,
-        allocator,
-        body,
-        .{ .label = "hydro warning" },
-    );
-}
+pub const parse = Source.parse;
+pub const fetch = Source.fetch;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!warnings.Warning {
     const common = try fields.decode(allocator, .{

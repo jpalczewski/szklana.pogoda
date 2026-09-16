@@ -1,8 +1,6 @@
 const std = @import("std");
-const Io = std.Io;
 const value = @import("value.zig");
-const http = @import("http.zig");
-const records = @import("records.zig");
+const product = @import("product.zig");
 const model = @import("../weather/model.zig");
 
 pub const Error = value.Error;
@@ -25,24 +23,14 @@ const Raw = struct {
     cisnienie: ?[]const u8 = null, // pressure (hPa)
 };
 
-pub fn fetch(allocator: std.mem.Allocator, io: Io) Error![]model.Observation {
-    return http.fetchParsed([]model.Observation, allocator, io, endpoint, parse);
-}
+/// A malformed record means a malformed payload here, so decoding is strict.
+const Source = product.Product(model.Observation, Raw, endpoint, parseRaw, model.deinitObservationItems, .{ .label = "synop", .strict = true });
 
 /// Converts the API's string-valued records into the application's typed model.
 /// The returned strings are owned by `allocator` and must be released with
 /// `model.deinitObservations`.
-pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]model.Observation {
-    return records.decode(
-        model.Observation,
-        Raw,
-        parseRaw,
-        model.deinitObservationItems,
-        allocator,
-        body,
-        .{ .label = "synop", .strict = true },
-    );
-}
+pub const parse = Source.parse;
+pub const fetch = Source.fetch;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.Observation {
     const temperature = try value.optionalFloat(raw.temperatura);

@@ -14,11 +14,11 @@ pub const Options = struct {
 
 /// Decodes a JSON array of IMGW records into owned domain items.
 ///
-/// `parseRecord` maps one raw record and `deinitItems` releases a decoded
-/// slice; both are supplied per product. Records that fail to decode are
-/// logged and skipped unless `options.strict` is set, in which case their
-/// error aborts the whole response. The returned slice and every item in it
-/// are owned by `allocator`.
+/// `parseRecord` maps one raw record and `deinitItems` releases the items of a
+/// batch without releasing the slice itself, which this decoder owns. Records
+/// that fail to decode are logged and skipped unless `options.strict` is set,
+/// in which case their error aborts the whole response. The returned slice and
+/// every item in it are owned by `allocator`.
 pub fn decode(
     comptime Item: type,
     comptime Raw: type,
