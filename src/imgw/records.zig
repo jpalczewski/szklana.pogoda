@@ -16,9 +16,10 @@ pub const Options = struct {
 ///
 /// `parseRecord` maps one raw record and `deinitItems` releases the items of a
 /// batch without releasing the slice itself, which this decoder owns. Records
-/// that fail to decode are logged and skipped unless `options.strict` is set,
-/// in which case their error aborts the whole response. The returned slice and
-/// every item in it are owned by `allocator`.
+/// that fail to decode are skipped unless `options.strict` is set, in which
+/// case their error aborts the whole response. A batch that dropped records is
+/// reported once, with the number of skipped records out of the total. The
+/// returned slice and every item in it are owned by `allocator`.
 pub fn decode(
     comptime Item: type,
     comptime Raw: type,
@@ -36,13 +37,17 @@ pub fn decode(
         deinitItems(allocator, items.items);
         items.deinit(allocator);
     }
-    for (parsed.value, 0..) |raw, index| {
+    var skipped: usize = 0;
+    for (parsed.value) |raw| {
         const item = parseRecord(allocator, raw) catch |err| {
             if (options.strict) return err;
-            std.log.warn("skipping invalid IMGW {s} record {d}: {t}", .{ options.label, index, err });
+            skipped += 1;
             continue;
         };
         try items.append(allocator, item);
+    }
+    if (skipped > 0) {
+        std.log.warn("skipped {d} of {d} invalid IMGW {s} records", .{ skipped, parsed.value.len, options.label });
     }
     return items.toOwnedSlice(allocator);
 }

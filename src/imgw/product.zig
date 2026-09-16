@@ -2,7 +2,7 @@
 //!
 //! A product file declares its endpoint, its private wire struct and how to map
 //! one raw record into the domain model, then instantiates this template. The
-//! plumbing — HTTP transport, JSON-array decoding, per-record error logging and
+//! plumbing — HTTP transport, JSON-array decoding, per-batch skip reporting and
 //! partial-batch cleanup — is written once here.
 
 const std = @import("std");
