@@ -1,0 +1,4 @@
+# Store LF and check it out as LF regardless of core.autocrlf, which is enabled
+# in some global configurations and would otherwise turn every source file into
+# CRLF, which zig fmt reports as unformatted.
+* text=auto eol=lf
