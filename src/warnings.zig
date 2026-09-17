@@ -5,8 +5,8 @@ const std = @import("std");
 /// into this one model so storage, queries and the HTTP API stay source
 /// agnostic.
 pub const Source = enum {
-    meteo,
     hydro,
+    meteo,
 
     pub fn fromQuery(value: []const u8) ?Source {
         inline for (@typeInfo(Source).@"enum".fields) |field| {
@@ -94,6 +94,7 @@ fn hashOptionalInt(hasher: *std.hash.Wyhash, value: ?i16) void {
         hasher.update(&[_]u8{0x00});
         return;
     };
+    // zlinter-disable-next-line no_undefined - writeInt fills both bytes before they are read
     var bytes: [2]u8 = undefined;
     std.mem.writeInt(i16, &bytes, number, .little);
     hasher.update(&[_]u8{0x01});

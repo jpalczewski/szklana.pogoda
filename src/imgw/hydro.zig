@@ -38,10 +38,10 @@ const Raw = struct {
 
 /// A station without a water-level timestamp carries no usable measurement, so
 /// it is skipped rather than stored half-empty.
-const Source = product.Product(model.HydroObservation, Raw, endpoint, parseRaw, model.deinitHydroItems, .{ .label = "hydro" });
+const source = product.Product(model.HydroObservation, Raw, endpoint, parseRaw, model.deinitHydroItems, .{ .label = "hydro" });
 
-pub const parse = Source.parse;
-pub const fetch = Source.fetch;
+pub const parse = source.parse;
+pub const fetch = source.fetch;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.HydroObservation {
     const station_id = try value.presentText(allocator, raw.id_stacji);

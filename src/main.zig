@@ -15,24 +15,25 @@ const imgw = @import("imgw/mod.zig");
 const weather = @import("weather/mod.zig");
 const timestamps = @import("timestamps.zig");
 const warnings = @import("warnings.zig");
+const process_memory = @import("process_memory.zig");
 
 /// Every module of the server, named once so the analysis below and the test
 /// collection at the end of this file cannot drift apart.
 const modules = .{
-    @import("app_log.zig"),
-    @import("metrics.zig"),
-    @import("process_memory.zig"),
-    @import("router.zig"),
-    @import("server.zig"),
-    @import("timestamps.zig"),
-    @import("warnings.zig"),
-    @import("routes/api.zig"),
-    @import("routes/pages.zig"),
-    @import("routes/metrics.zig"),
-    @import("routes/storm.zig"),
-    @import("antistorm/mod.zig"),
-    @import("imgw/mod.zig"),
-    @import("weather/mod.zig"),
+    app_log,
+    metrics,
+    process_memory,
+    router,
+    server,
+    timestamps,
+    warnings,
+    api,
+    pages,
+    metrics_route,
+    storm,
+    antistorm,
+    imgw,
+    weather,
 };
 
 /// Forces the semantic analyzer over every function of a module, so production
@@ -81,7 +82,7 @@ const Config = struct {
     storm_cache_seconds: u64 = 5 * 60,
 
     // The host borrows storage from environ, which must outlive this config.
-    fn from_env(environ: *const std.process.Environ.Map) !Config {
+    fn fromEnv(environ: *const std.process.Environ.Map) !Config {
         const defaults: Config = .{};
         const config: Config = .{
             .host = environ.get("HOST") orelse defaults.host,
@@ -106,7 +107,7 @@ const Config = struct {
         if (self.storm_cache_seconds == 0) return error.InvalidStormCacheInterval;
     }
 
-    fn concurrent_limit(self: Config, cpu_count: usize) !usize {
+    fn concurrentLimit(self: Config, cpu_count: usize) !usize {
         try self.validate();
         const connections = try std.math.mul(usize, cpu_count, self.max_connections_per_cpu);
         // Reserve one task for each listener.
@@ -116,11 +117,11 @@ const Config = struct {
 
 const routes = [_]router.Route{
     .{ .method = .GET, .path = "/", .handler = pages.home },
-    .{ .method = .GET, .path = "/en/", .handler = pages.home_en },
+    .{ .method = .GET, .path = "/en/", .handler = pages.homeEn },
     .{ .method = .GET, .path = "/98.css", .handler = pages.style },
-    .{ .method = .GET, .path = "/app.css", .handler = pages.app_style },
-    .{ .method = .GET, .path = "/app.js", .handler = pages.app_script },
-    .{ .method = .GET, .path = "/alpine.js", .handler = pages.alpine_script },
+    .{ .method = .GET, .path = "/app.css", .handler = pages.appStyle },
+    .{ .method = .GET, .path = "/app.js", .handler = pages.appScript },
+    .{ .method = .GET, .path = "/alpine.js", .handler = pages.alpineScript },
     .{ .method = .POST, .path = "/api/ping", .handler = api.ping },
     .{ .method = .GET, .path = "/api/memory", .handler = api.memory },
     .{ .method = .GET, .path = "/api/weather/history", .handler = api.weatherHistory },
@@ -140,13 +141,13 @@ const metrics_routes = [_]router.Route{
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
-    const config = try Config.from_env(init.environ_map);
-    const database_path = try gpa.dupeZ(u8, config.database_path);
+    const config = try Config.fromEnv(init.environ_map);
+    const database_path = try gpa.dupeSentinel(u8, config.database_path, 0);
     defer gpa.free(database_path);
 
     const cpu_count = std.Thread.getCpuCount() catch 1;
     var threaded: Io.Threaded = .init(gpa, .{
-        .concurrent_limit = .limited(try config.concurrent_limit(cpu_count)),
+        .concurrent_limit = .limited(try config.concurrentLimit(cpu_count)),
     });
     defer threaded.deinit();
     const io = threaded.io();
@@ -174,9 +175,9 @@ pub fn main(init: std.process.Init) !void {
     var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry, .weather_store = &observations, .storm = &storm_client, .io = io };
     var metrics_app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry };
     var connections: Io.Group = .init;
-    defer connections.await(io) catch {};
+    defer connections.await(io) catch |err| std.log.warn("connections did not shut down cleanly: {t}", .{err});
     var listeners: Io.Group = .init;
-    defer listeners.await(io) catch {};
+    defer listeners.await(io) catch |err| std.log.warn("listeners did not shut down cleanly: {t}", .{err});
 
     const app_listener_config: server.ListenerConfig = .{
         .name = "application",
@@ -226,9 +227,9 @@ test "config uses defaults for an empty environment" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
 
-    const config = try Config.from_env(&environ);
+    const config = try Config.fromEnv(&environ);
     try std.testing.expectEqualDeep(Config{}, config);
-    try std.testing.expectEqual(@as(usize, 10), try config.concurrent_limit(2));
+    try std.testing.expectEqual(@as(usize, 10), try config.concurrentLimit(2));
 }
 
 test "config reads environment overrides" {
@@ -244,7 +245,7 @@ test "config reads environment overrides" {
     try environ.put("IMGW_WARNINGS_INTERVAL_SECONDS", "120");
     try environ.put("STORM_CACHE_SECONDS", "60");
 
-    const config = try Config.from_env(&environ);
+    const config = try Config.fromEnv(&environ);
     try std.testing.expectEqualDeep(Config{
         .host = "127.0.0.1",
         .port = 18080,
@@ -256,45 +257,45 @@ test "config reads environment overrides" {
         .imgw_warnings_interval_seconds = 120,
         .storm_cache_seconds = 60,
     }, config);
-    try std.testing.expectEqual(@as(usize, 26), try config.concurrent_limit(3));
+    try std.testing.expectEqual(@as(usize, 26), try config.concurrentLimit(3));
 
     try environ.put("TRUST_PROXY", "FALSE");
-    try std.testing.expect(!(try Config.from_env(&environ)).trust_proxy);
+    try std.testing.expect(!(try Config.fromEnv(&environ)).trust_proxy);
 }
 
 test "config rejects zero connections per CPU" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
     try environ.put("MAX_CONNECTIONS_PER_CPU", "0");
-    try std.testing.expectError(error.InvalidMaxConnectionsPerCpu, Config.from_env(&environ));
+    try std.testing.expectError(error.InvalidMaxConnectionsPerCpu, Config.fromEnv(&environ));
 }
 
 test "config rejects zero IMGW warnings interval" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
     try environ.put("IMGW_WARNINGS_INTERVAL_SECONDS", "0");
-    try std.testing.expectError(error.InvalidImgwWarningsInterval, Config.from_env(&environ));
+    try std.testing.expectError(error.InvalidImgwWarningsInterval, Config.fromEnv(&environ));
 }
 
 test "config rejects zero IMGW interval" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
     try environ.put("IMGW_INTERVAL_SECONDS", "0");
-    try std.testing.expectError(error.InvalidImgwInterval, Config.from_env(&environ));
+    try std.testing.expectError(error.InvalidImgwInterval, Config.fromEnv(&environ));
 }
 
 test "config rejects zero storm cache interval" {
     var environ = std.process.Environ.Map.init(std.testing.allocator);
     defer environ.deinit();
     try environ.put("STORM_CACHE_SECONDS", "0");
-    try std.testing.expectError(error.InvalidStormCacheInterval, Config.from_env(&environ));
+    try std.testing.expectError(error.InvalidStormCacheInterval, Config.fromEnv(&environ));
 }
 
 test "config detects multiplication and listener reservation overflow" {
     const config: Config = .{ .max_connections_per_cpu = std.math.maxInt(usize) };
-    try std.testing.expectError(error.Overflow, config.concurrent_limit(2));
-    try std.testing.expectError(error.Overflow, config.concurrent_limit(1));
+    try std.testing.expectError(error.Overflow, config.concurrentLimit(2));
+    try std.testing.expectError(error.Overflow, config.concurrentLimit(1));
 
     const largest_valid: Config = .{ .max_connections_per_cpu = std.math.maxInt(usize) - 2 };
-    try std.testing.expectEqual(std.math.maxInt(usize), try largest_valid.concurrent_limit(1));
+    try std.testing.expectEqual(std.math.maxInt(usize), try largest_valid.concurrentLimit(1));
 }

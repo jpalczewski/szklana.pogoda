@@ -42,6 +42,7 @@ pub const Registry = struct {
     pub fn deinit(self: *Registry) void {
         self.in_flight.deinit(self.allocator);
         self.series.deinit(self.allocator);
+        self.* = undefined;
     }
 
     pub fn begin(self: *Registry, method: []const u8, route: []const u8) void {
@@ -145,8 +146,12 @@ pub const Registry = struct {
 };
 
 fn appendLine(output: *std.ArrayList(u8), allocator: std.mem.Allocator, comptime format: []const u8, args: anytype) std.mem.Allocator.Error!void {
+    // Every caller's route/method/status/bucket values are bounded well under
+    // this, so the only way to hit the error is a new caller widening the
+    // format past what fits; panicking says so instead of miscounting.
     var buffer: [512]u8 = undefined;
-    const line = std.fmt.bufPrint(&buffer, format, args) catch unreachable;
+    const line = std.fmt.bufPrint(&buffer, format, args) catch |err|
+        std.debug.panic("metrics line exceeds {d} bytes ({t})", .{ buffer.len, err });
     try output.appendSlice(allocator, line);
 }
 
@@ -160,9 +165,9 @@ test "registry renders Prometheus counters and histogram" {
 
     const rendered = try registry.render(std.testing.allocator);
     defer std.testing.allocator.free(rendered);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "# TYPE szklana_pogoda_http_requests_total counter\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "szklana_pogoda_http_requests_total{method=\"GET\",route=\"/\",status=\"200\"} 1\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "le=\"0.005\"} 0\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "le=\"0.01\"} 1\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "le=\"+Inf\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "# TYPE szklana_pogoda_http_requests_total counter\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_http_requests_total{method=\"GET\",route=\"/\",status=\"200\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "le=\"0.005\"} 0\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "le=\"0.01\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "le=\"+Inf\"} 1\n") != null);
 }

@@ -35,6 +35,7 @@ fn readLinux() Error!Usage {
 }
 
 fn readMacos() Error!Usage {
+    // zlinter-disable-next-line no_undefined - filled by proc_pidinfo below, checked before info is read
     var info: ProcTaskInfo = undefined;
     const bytes_read = proc_pidinfo(
         @intCast(std.posix.system.getpid()),
@@ -65,6 +66,7 @@ fn readMacosFootprint() ?u64 {
         if (task == std.c.TASK.NULL) return null;
 
         var info_count = std.c.TASK.VM.INFO_COUNT;
+        // zlinter-disable-next-line no_undefined - filled by task_info below, checked before info is read
         var info: std.c.task_vm_info_data_t = undefined;
         if (std.c.task_info(task, std.c.TASK.VM.INFO, @ptrCast(&info), &info_count) != 0) return null;
         return info.phys_footprint;

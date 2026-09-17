@@ -61,6 +61,7 @@ fn writeLine(line: []const u8) void {
     if (line.len == 0) return;
     write_mutex.lockUncancelable(std.Options.debug_io);
     defer write_mutex.unlock(std.Options.debug_io);
+    // zlinter-disable-next-line no_swallow_error - stdout is gone (e.g. a closed pipe); this logger has nowhere else to report it, and std.log routes back here, so logging the failure would recurse
     std.Io.File.stdout().writeStreamingAll(std.Options.debug_io, line) catch {};
 }
 

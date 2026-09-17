@@ -45,10 +45,10 @@ fn render(allocator: std.mem.Allocator, template: []const u8, locale_json: []con
     errdefer output.deinit(allocator);
 
     var position: usize = 0;
-    while (std.mem.indexOfPos(u8, template, position, "{{")) |open| {
+    while (std.mem.findPos(u8, template, position, "{{")) |open| {
         try output.appendSlice(allocator, template[position..open]);
         const key_start = open + 2;
-        const close_relative = std.mem.indexOf(u8, template[key_start..], "}}") orelse {
+        const close_relative = std.mem.find(u8, template[key_start..], "}}") orelse {
             return error.UnclosedPlaceholder;
         };
         const key_end = key_start + close_relative;

@@ -29,10 +29,10 @@ const Raw = struct {
 
 /// Meteo records stand alone, so one malformed station is skipped instead of
 /// discarding the whole response.
-const Source = product.Product(model.Observation, Raw, endpoint, parseRaw, model.deinitObservationItems, .{ .label = "meteo" });
+const source = product.Product(model.Observation, Raw, endpoint, parseRaw, model.deinitObservationItems, .{ .label = "meteo" });
 
-pub const parse = Source.parse;
-pub const fetch = Source.fetch;
+pub const parse = source.parse;
+pub const fetch = source.fetch;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.Observation {
     const source_time = raw.temperatura_powietrza_data orelse raw.wilgotnosc_wzgledna_data orelse raw.opad_10min_data orelse return error.InvalidData;

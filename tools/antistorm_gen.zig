@@ -157,9 +157,9 @@ fn arrayLiteral(allocator: std.mem.Allocator, source: []const u8, name: []const 
     try header.appendSlice(allocator, name);
     try header.appendSlice(allocator, " = new Array(");
 
-    const start = std.mem.indexOf(u8, source, header.items) orelse return error.InvalidSource;
+    const start = std.mem.find(u8, source, header.items) orelse return error.InvalidSource;
     const body_start = start + header.items.len;
-    const body_end = std.mem.indexOfScalar(u8, source[body_start..], ')') orelse return error.InvalidSource;
+    const body_end = std.mem.findScalar(u8, source[body_start..], ')') orelse return error.InvalidSource;
     const body = source[body_start .. body_start + body_end];
 
     var literals: std.ArrayList([]const u8) = .empty;
@@ -170,11 +170,11 @@ fn arrayLiteral(allocator: std.mem.Allocator, source: []const u8, name: []const 
 
     var rest = body;
     while (true) {
-        const open = std.mem.indexOfScalar(u8, rest, '"') orelse break;
+        const open = std.mem.findScalar(u8, rest, '"') orelse break;
         const content_start = open + 1;
-        const close = std.mem.indexOfScalar(u8, rest[content_start..], '"') orelse return error.InvalidSource;
+        const close = std.mem.findScalar(u8, rest[content_start..], '"') orelse return error.InvalidSource;
         const value = rest[content_start .. content_start + close];
-        if (std.mem.indexOfScalar(u8, value, '\\') != null) return error.InvalidSource;
+        if (std.mem.findScalar(u8, value, '\\') != null) return error.InvalidSource;
         try literals.append(allocator, try allocator.dupe(u8, value));
         rest = rest[content_start + close + 1 ..];
     }

@@ -36,10 +36,10 @@ const RawArea = struct {
 
 /// A malformed hydrological warning is skipped rather than discarding the
 /// whole response.
-const Source = product.Product(warnings.Warning, Raw, endpoint, parseRaw, warnings.deinitWarningItems, .{ .label = "hydro warning" });
+const source = product.Product(warnings.Warning, Raw, endpoint, parseRaw, warnings.deinitWarningItems, .{ .label = "hydro warning" });
 
-pub const parse = Source.parse;
-pub const fetch = Source.fetch;
+pub const parse = source.parse;
+pub const fetch = source.fetch;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!warnings.Warning {
     const common = try fields.decode(allocator, .{

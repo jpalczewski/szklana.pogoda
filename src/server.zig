@@ -124,6 +124,7 @@ fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, confi
     }
 
     const has_framed_body = content_length != null or request.head.transfer_encoding == .chunked;
+    // zlinter-disable-next-line no_undefined - set below when has_framed_body; body_ptr stays null otherwise, so body is never read unset
     var body: router.Body = undefined;
     const body_ptr: ?*router.Body = if (has_framed_body) blk: {
         const body_reader = request.readerExpectContinue(&.{}) catch |err| {
@@ -158,7 +159,7 @@ fn clientIp(trust_proxy: bool, headers: []const router.Header, peer_ip: []const 
     if (!trust_proxy) return peer_ip;
 
     if (findHeader(headers, "x-forwarded-for")) |forwarded_for| {
-        const first = std.mem.trim(u8, forwarded_for[0..(std.mem.indexOfScalar(u8, forwarded_for, ',') orelse forwarded_for.len)], " \t");
+        const first = std.mem.trim(u8, forwarded_for[0..(std.mem.findScalar(u8, forwarded_for, ',') orelse forwarded_for.len)], " \t");
         if (first.len != 0) return first;
     }
     if (findHeader(headers, "x-real-ip")) |real_ip| {
@@ -248,7 +249,7 @@ test "observation stays active until scope exit including error returns" {
 
             const active = try registry.render(std.testing.allocator);
             defer std.testing.allocator.free(active);
-            try std.testing.expect(std.mem.indexOf(u8, active, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 1\n") != null);
+            try std.testing.expect(std.mem.find(u8, active, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 1\n") != null);
             if (fail) return error.TestRequestFailed;
         }
     };
@@ -263,7 +264,7 @@ test "observation stays active until scope exit including error returns" {
         }
         const ended = try registry.render(std.testing.allocator);
         defer std.testing.allocator.free(ended);
-        try std.testing.expect(std.mem.indexOf(u8, ended, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 0\n") != null);
+        try std.testing.expect(std.mem.find(u8, ended, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 0\n") != null);
         try std.testing.expectEqual(@as(usize, 0), registry.series.items.len);
     }
 }
@@ -290,12 +291,12 @@ test "peer address formatting omits TCP port" {
 }
 
 test "route labels use a bounded unmatched value" {
-    const test_handler = struct {
+    const testHandlerFn = struct {
         fn handle(_: *router.App, _: *router.RequestContext) router.AppError!router.Response {
             return router.Response.text(.ok, "ok");
         }
     }.handle;
-    const routes = [_]router.Route{.{ .method = .GET, .path = "/known", .handler = test_handler }};
+    const routes = [_]router.Route{.{ .method = .GET, .path = "/known", .handler = testHandlerFn }};
     try std.testing.expectEqualStrings("/known", routeLabel(&routes, "/known"));
     try std.testing.expectEqualStrings("unmatched", routeLabel(&routes, "/other"));
 }

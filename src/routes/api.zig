@@ -22,7 +22,7 @@ pub fn memory(_: *router.App, request: *router.RequestContext) router.AppError!r
 fn stationsRoute(
     comptime T: type,
     comptime list: anytype,
-    comptime deinit_items: fn (std.mem.Allocator, []T) void,
+    comptime deinitItems: fn (std.mem.Allocator, []T) void,
     comptime filter: fn (*router.RequestContext) router.AppError!?[]const u8,
     comptime what: []const u8,
 ) router.Handler {
@@ -34,7 +34,7 @@ fn stationsRoute(
                 std.log.err("{s} unavailable: {t}", .{ what, err });
                 return error.WeatherStoreUnavailable;
             };
-            defer deinit_items(request.allocator, stations);
+            defer deinitItems(request.allocator, stations);
             return router.Response.jsonValue(request.allocator, .ok, .{ .stations = stations });
         }
     }.handle;
@@ -61,7 +61,7 @@ fn hydroStationsAll(store: *weather.Store, allocator: std.mem.Allocator, _: ?[]c
 fn historyRoute(
     comptime T: type,
     comptime list: anytype,
-    comptime deinit_items: fn (std.mem.Allocator, []T) void,
+    comptime deinitItems: fn (std.mem.Allocator, []T) void,
     comptime what: []const u8,
 ) router.Handler {
     return struct {
@@ -75,7 +75,7 @@ fn historyRoute(
                 std.log.err("{s} unavailable: {t}", .{ what, err });
                 return error.WeatherStoreUnavailable;
             };
-            defer deinit_items(request.allocator, observations);
+            defer deinitItems(request.allocator, observations);
             return router.Response.jsonValue(request.allocator, .ok, .{
                 .station_id = station_id,
                 .observations = observations,
@@ -224,8 +224,8 @@ test "memory endpoint returns JSON memory statistics" {
     try std.testing.expectEqual(.ok, response.status);
     try std.testing.expectEqualStrings("application/json; charset=utf-8", response.content_type);
     try std.testing.expect(std.mem.startsWith(u8, response.body, "{\"rss_bytes\":"));
-    try std.testing.expect(std.mem.indexOf(u8, response.body, ",\"virtual_memory_bytes\":") != null);
-    try std.testing.expect(std.mem.indexOf(u8, response.body, ",\"own_bytes\":") != null);
+    try std.testing.expect(std.mem.find(u8, response.body, ",\"virtual_memory_bytes\":") != null);
+    try std.testing.expect(std.mem.find(u8, response.body, ",\"own_bytes\":") != null);
     try std.testing.expect(std.mem.endsWith(u8, response.body, "}"));
 }
 
@@ -592,7 +592,7 @@ test "warnings history keeps expired warnings" {
     request.path = "/api/warnings/history";
     const history = try warningsHistory(&app, &request);
     defer std.testing.allocator.free(history.body);
-    try std.testing.expect(std.mem.indexOf(u8, history.body, "\"warning_id\":\"Sk0\"") != null);
+    try std.testing.expect(std.mem.find(u8, history.body, "\"warning_id\":\"Sk0\"") != null);
 }
 
 test "warnings endpoint needs a store" {

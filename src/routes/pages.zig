@@ -10,7 +10,7 @@ pub fn home(_: *router.App, _: *router.RequestContext) router.AppError!router.Re
     return router.Response.html(i18n.pl_html);
 }
 
-pub fn home_en(_: *router.App, _: *router.RequestContext) router.AppError!router.Response {
+pub fn homeEn(_: *router.App, _: *router.RequestContext) router.AppError!router.Response {
     return router.Response.html(i18n.en_html);
 }
 
@@ -18,14 +18,14 @@ pub fn style(_: *router.App, _: *router.RequestContext) router.AppError!router.R
     return router.Response.css(style_css);
 }
 
-pub fn app_style(_: *router.App, _: *router.RequestContext) router.AppError!router.Response {
+pub fn appStyle(_: *router.App, _: *router.RequestContext) router.AppError!router.Response {
     return router.Response.css(app_css);
 }
 
-pub fn app_script(_: *router.App, _: *router.RequestContext) router.AppError!router.Response {
+pub fn appScript(_: *router.App, _: *router.RequestContext) router.AppError!router.Response {
     return router.Response.javascript(app_js);
 }
 
-pub fn alpine_script(_: *router.App, _: *router.RequestContext) router.AppError!router.Response {
+pub fn alpineScript(_: *router.App, _: *router.RequestContext) router.AppError!router.Response {
     return router.Response.javascript(alpine_js);
 }
