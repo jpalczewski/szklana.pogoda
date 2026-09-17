@@ -152,6 +152,14 @@ const hydro_timestamp_version = 1;
 const migration_marker = "'~local-to-utc~'";
 const pragmaUserVersion = "PRAGMA user_version = " ++ std.fmt.comptimePrint("{d}", .{hydro_timestamp_version});
 
+/// The connection's page cache in kibibytes, which is the unit SQLite's
+/// `cache_size` takes when the value is negative. Its default of 2 MiB is sized
+/// for a database that is read continuously; this store writes one batch every
+/// few minutes and reads nothing in between, so the cache is capped instead of
+/// reserved for the life of the process.
+const page_cache_kib = 512;
+const pragmaPageCache = "PRAGMA cache_size = -" ++ std.fmt.comptimePrint("{d}", .{page_cache_kib});
+
 pub const Store = struct {
     db: sqlite.Db,
     /// The wall clock the store reads; only the one-time hydro migration in
@@ -169,6 +177,7 @@ pub const Store = struct {
         };
         errdefer store.deinit();
         try store.migrate(allocator);
+        try store.tune();
         return store;
     }
 
@@ -182,11 +191,25 @@ pub const Store = struct {
         };
         errdefer store.deinit();
         try store.migrate(allocator);
+        try store.tune();
         return store;
     }
 
     pub fn deinit(self: *Store) void {
         self.db.deinit();
+    }
+
+    /// The connection settings the store relies on, applied once the schema is
+    /// in place.
+    fn tune(self: *Store) !void {
+        try self.db.exec(pragmaPageCache, .{}, .{});
+    }
+
+    /// Hands back the page cache and the other transient memory SQLite holds
+    /// for this connection. The updater calls it once a batch is written,
+    /// because that is the only moment the cache fills up.
+    pub fn releaseMemory(self: *Store) void {
+        _ = sqlite.c.sqlite3_db_release_memory(self.db.db);
     }
 
     /// Reports whether `source` was polled successfully within the last
