@@ -6,6 +6,12 @@
             .url = "git+https://github.com/vrischmann/zig-sqlite#961c14efb2c9cc4bc6c065926ac3bdb74520c995",
             .hash = "sqlite-3.48.0-F2R_a-akDgC9Nl0WrJKKmmsRppgaacuXNU5758BOFt-6",
         },
+        // Timezone and DST aware clock. Its `main` tracks Zig 0.17, so the
+        // pinned release is the one that builds with the toolchain here.
+        .zeit = .{
+            .url = "git+https://github.com/rockorager/zeit#v0.9.0",
+            .hash = "zeit-0.9.0-5I6bk2m9AgBSMH8-L6rYJkwuQAyhXplnfxnvTSGzVHUR",
+        },
     },
     .paths = .{""},
     .fingerprint = 0x6956649626ed9792,
