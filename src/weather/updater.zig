@@ -90,33 +90,41 @@ const warning_sources = [_]Source(warnings.Warning){
     .{ .label = "hydro warning", .fetch = &imgw.warnings.hydro.fetch, .deinit = &warnings.deinitWarnings, .record = &recordWarningBatch, .max_age_seconds = freshness.hydro_seconds },
 };
 
-pub fn run(allocator: std.mem.Allocator, io: Io, store: *storage.Store, interval_seconds: u64) void {
+/// `scratch` backs the temporary memory of a poll and nothing else: a poll
+/// downloads a few megabytes, decodes them and writes them to the store, and
+/// every byte of that is dead once the product is stored. `main` therefore
+/// passes `std.heap.page_allocator` so the pages go back to the kernel instead
+/// of staying mapped, empty and dirty inside the process allocator until it
+/// exits.
+pub fn run(scratch: std.mem.Allocator, io: Io, store: *storage.Store, interval_seconds: u64) void {
     while (true) {
         for (measurement_sources) |source| {
-            poll(model.Observation, source, source.fetch, allocator, io, .{ .store = store, .label = source.label, .now_seconds = nowSeconds(io) });
+            poll(model.Observation, source, source.fetch, scratch, io, .{ .store = store, .label = source.label, .now_seconds = nowSeconds(io) });
         }
-        poll(model.HydroObservation, hydro_source, hydro_source.fetch, allocator, io, .{ .store = store, .label = hydro_source.label, .now_seconds = nowSeconds(io) });
+        poll(model.HydroObservation, hydro_source, hydro_source.fetch, scratch, io, .{ .store = store, .label = hydro_source.label, .now_seconds = nowSeconds(io) });
         sleep(io, interval_seconds) catch return;
     }
 }
 
-pub fn runWarnings(allocator: std.mem.Allocator, io: Io, store: *storage.Store, interval_seconds: u64) void {
+/// The warnings run on their own cadence; `scratch` has the same meaning as in
+/// `run`.
+pub fn runWarnings(scratch: std.mem.Allocator, io: Io, store: *storage.Store, interval_seconds: u64) void {
     while (true) {
-        updateWarnings(allocator, io, store);
+        updateWarnings(scratch, io, store);
         sleep(io, interval_seconds) catch return;
     }
 }
 
-fn updateWarnings(allocator: std.mem.Allocator, io: Io, store: *storage.Store) void {
+fn updateWarnings(scratch: std.mem.Allocator, io: Io, store: *storage.Store) void {
     const now_seconds = nowSeconds(io);
-    const seen_at = timestamps.clock().localNow(allocator, io) catch |err| {
+    const seen_at = timestamps.clock().localNow(scratch, io) catch |err| {
         std.log.err("reading the wall clock failed: {t}", .{err});
         return;
     };
-    defer allocator.free(seen_at);
+    defer scratch.free(seen_at);
 
     for (warning_sources) |source| {
-        poll(warnings.Warning, source, source.fetch, allocator, io, .{ .store = store, .label = source.label, .seen_at = seen_at, .now_seconds = now_seconds });
+        poll(warnings.Warning, source, source.fetch, scratch, io, .{ .store = store, .label = source.label, .seen_at = seen_at, .now_seconds = now_seconds });
     }
 }
 
@@ -127,11 +135,17 @@ fn updateWarnings(allocator: std.mem.Allocator, io: Io, store: *storage.Store) v
 /// its freshness window is left alone and the endpoint is not contacted at all.
 /// `fetch` is a parameter only so a test can observe that decision without a
 /// network; every production call passes the source's own fetch.
+///
+/// The decoded batch lives in an arena over `scratch` that is released before
+/// this function returns. That is the whole point of the arena: the response
+/// body and the items built from it are large, short-lived and independent of
+/// each other, so a general-purpose allocator keeps their pages mapped long
+/// after they are freed, while an arena hands them back in one step.
 fn poll(
     comptime Item: type,
     source: Source(Item),
     fetch: *const fn (std.mem.Allocator, Io) imgw.Error![]Item,
-    allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
     io: Io,
     context: Context,
 ) void {
@@ -146,14 +160,18 @@ fn poll(
         return;
     }
 
-    const items = fetch(allocator, io) catch |err| {
+    var arena: std.heap.ArenaAllocator = .init(scratch);
+    defer arena.deinit();
+    const work = arena.allocator();
+
+    const items = fetch(work, io) catch |err| {
         std.log.err("IMGW {s} fetch failed: {t}", .{ context.label, err });
         return;
     };
-    defer source.deinit(allocator, items);
+    defer source.deinit(work, items);
 
     if (source.fromWarsaw) |convert| {
-        convert(allocator, items, context) catch |err| {
+        convert(work, items, context) catch |err| {
             std.log.err("rewriting IMGW {s} timestamps failed: {t}", .{ context.label, err });
             return;
         };
@@ -163,6 +181,7 @@ fn poll(
         std.log.err("saving IMGW {s} failed: {t}", .{ context.label, err });
         return;
     };
+    context.store.releaseMemory();
     context.store.recordPoll(source.label, context.now_seconds) catch |err| {
         std.log.err("recording the IMGW {s} poll failed: {t}", .{ context.label, err });
         return;
