@@ -55,9 +55,10 @@ pub fn cities(_: *router.App, request: *router.RequestContext) router.AppError!r
     var matches: std.ArrayList(CityPayload) = .empty;
     defer matches.deinit(request.allocator);
     for (antistorm.cities.all, 0..) |entry, index| {
+        // zlinter-disable-next-line no_undefined - fold() overwrites candidate before it is read
         var candidate: [antistorm.cities.max_name_bytes]u8 = undefined;
         const name = antistorm.cities.fold(entry.name, &candidate);
-        if (needle.len != 0 and std.mem.indexOf(u8, name, needle) == null) continue;
+        if (needle.len != 0 and std.mem.find(u8, name, needle) == null) continue;
         try matches.append(request.allocator, .{
             .city_id = @intCast(index),
             .city_name = entry.name,

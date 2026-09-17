@@ -25,13 +25,13 @@ const Raw = struct {
 };
 
 /// A malformed record means a malformed payload here, so decoding is strict.
-const Source = product.Product(model.Observation, Raw, endpoint, parseRaw, model.deinitObservationItems, .{ .label = "synop", .strict = true });
+const source = product.Product(model.Observation, Raw, endpoint, parseRaw, model.deinitObservationItems, .{ .label = "synop", .strict = true });
 
 /// Converts the API's string-valued records into the application's typed model.
 /// The returned strings are owned by `allocator` and must be released with
 /// `model.deinitObservations`.
-pub const parse = Source.parse;
-pub const fetch = Source.fetch;
+pub const parse = source.parse;
+pub const fetch = source.fetch;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.Observation {
     const observed_at = try observedAt(allocator, raw.data_pomiaru, raw.godzina_pomiaru);

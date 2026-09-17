@@ -55,7 +55,7 @@ pub fn decode(
 test "decode keeps valid records and skips malformed ones" {
     const Item = struct { id: []u8 };
     const Raw = struct { id: ?[]const u8 = null };
-    const Fixture = struct {
+    const fixture = struct {
         fn parseRecord(allocator: std.mem.Allocator, raw: Raw) Error!Item {
             return .{ .id = try value.presentText(allocator, raw.id) };
         }
@@ -68,9 +68,9 @@ test "decode keeps valid records and skips malformed ones" {
     const body =
         \\[{"id":"a"},{"id":null},{"id":"b"}]
     ;
-    const items = try decode(Item, Raw, Fixture.parseRecord, Fixture.deinitItems, std.testing.allocator, body, .{ .label = "test" });
+    const items = try decode(Item, Raw, fixture.parseRecord, fixture.deinitItems, std.testing.allocator, body, .{ .label = "test" });
     defer {
-        Fixture.deinitItems(std.testing.allocator, items);
+        fixture.deinitItems(std.testing.allocator, items);
         std.testing.allocator.free(items);
     }
 
@@ -82,7 +82,7 @@ test "decode keeps valid records and skips malformed ones" {
 test "decode in strict mode rejects the first malformed record" {
     const Item = struct { id: []u8 };
     const Raw = struct { id: ?[]const u8 = null };
-    const Fixture = struct {
+    const fixture = struct {
         fn parseRecord(allocator: std.mem.Allocator, raw: Raw) Error!Item {
             return .{ .id = try value.presentText(allocator, raw.id) };
         }
@@ -97,14 +97,14 @@ test "decode in strict mode rejects the first malformed record" {
     ;
     try std.testing.expectError(
         error.InvalidData,
-        decode(Item, Raw, Fixture.parseRecord, Fixture.deinitItems, std.testing.allocator, body, .{ .label = "test", .strict = true }),
+        decode(Item, Raw, fixture.parseRecord, fixture.deinitItems, std.testing.allocator, body, .{ .label = "test", .strict = true }),
     );
 }
 
 test "decode rejects bodies that are not record arrays" {
     const Item = struct { id: []u8 };
     const Raw = struct { id: ?[]const u8 = null };
-    const Fixture = struct {
+    const fixture = struct {
         fn parseRecord(allocator: std.mem.Allocator, raw: Raw) Error!Item {
             return .{ .id = try value.presentText(allocator, raw.id) };
         }
@@ -116,6 +116,6 @@ test "decode rejects bodies that are not record arrays" {
 
     try std.testing.expectError(
         error.InvalidData,
-        decode(Item, Raw, Fixture.parseRecord, Fixture.deinitItems, std.testing.allocator, "{\"error\":true}", .{ .label = "test" }),
+        decode(Item, Raw, fixture.parseRecord, fixture.deinitItems, std.testing.allocator, "{\"error\":true}", .{ .label = "test" }),
     );
 }

@@ -13,21 +13,21 @@ const records = @import("records.zig");
 
 pub const Error = value.Error;
 
-/// `parse_record` maps one wire record and `deinit_items` releases the items of
+/// `parseRecord` maps one wire record and `deinitItems` releases the items of
 /// a decoded batch without releasing the slice itself, which the decoder owns.
 pub fn Product(
     comptime Item: type,
     comptime Raw: type,
     comptime endpoint: []const u8,
-    comptime parse_record: fn (std.mem.Allocator, Raw) Error!Item,
-    comptime deinit_items: fn (std.mem.Allocator, []Item) void,
+    comptime parseRecord: fn (std.mem.Allocator, Raw) Error!Item,
+    comptime deinitItems: fn (std.mem.Allocator, []Item) void,
     comptime options: records.Options,
 ) type {
     return struct {
         /// Decodes a response body. The returned slice and every item in it are
         /// owned by `allocator`.
         pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error![]Item {
-            return records.decode(Item, Raw, parse_record, deinit_items, allocator, body, options);
+            return records.decode(Item, Raw, parseRecord, deinitItems, allocator, body, options);
         }
 
         /// Fetches the product endpoint and decodes it. The caller owns the

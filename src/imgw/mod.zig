@@ -21,13 +21,17 @@ pub const hydro = @import("hydro.zig");
 /// The measurement fields synop and meteo publish under different names.
 pub const observation_fields = @import("observation_fields.zig");
 
+const warnings_meteo = @import("warnings_meteo.zig");
+const warnings_hydro = @import("warnings_hydro.zig");
+const warning_fields = @import("warning_fields.zig");
+
 /// Warning products, normalized into the shared `warnings` domain model.
 pub const warnings = struct {
-    pub const meteo = @import("warnings_meteo.zig");
-    pub const hydro = @import("warnings_hydro.zig");
+    pub const meteo = warnings_meteo;
+    pub const hydro = warnings_hydro;
 
     /// Validity-window decoding shared by both warning products.
-    pub const fields = @import("warning_fields.zig");
+    pub const fields = warning_fields;
 };
 
 pub const Error = value.Error;

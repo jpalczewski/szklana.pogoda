@@ -85,6 +85,7 @@ pub const Body = struct {
         if (buffer.len == 0) return 0;
 
         if (self.remaining == 0) {
+            // zlinter-disable-next-line no_undefined - overwritten by readSliceShort before being read
             var probe: [1]u8 = undefined;
             const n = self.reader.readSliceShort(&probe) catch return error.BodyReadFailed;
             if (n == 0) return 0;
@@ -100,6 +101,7 @@ pub const Body = struct {
         var bytes: std.ArrayList(u8) = .empty;
         defer bytes.deinit(allocator);
 
+        // zlinter-disable-next-line no_undefined - overwritten by self.read before being read
         var chunk: [4096]u8 = undefined;
         while (true) {
             const n = try self.read(&chunk);
@@ -131,7 +133,7 @@ pub const RequestContext = struct {
     pub fn param(self: *const RequestContext, name: []const u8) ?[]const u8 {
         var pairs = std.mem.splitScalar(u8, self.query orelse return null, '&');
         while (pairs.next()) |pair| {
-            const separator = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+            const separator = std.mem.findScalar(u8, pair, '=') orelse continue;
             if (std.mem.eql(u8, pair[0..separator], name)) return pair[separator + 1 ..];
         }
         return null;
@@ -159,7 +161,7 @@ pub fn dispatch(routes: []const Route, app: *App, request: *RequestContext) AppE
 }
 
 pub fn splitTarget(target: []const u8) struct { path: []const u8, query: ?[]const u8 } {
-    const query_start = std.mem.indexOfScalar(u8, target, '?') orelse return .{ .path = target, .query = null };
+    const query_start = std.mem.findScalar(u8, target, '?') orelse return .{ .path = target, .query = null };
     return .{ .path = target[0..query_start], .query = target[query_start + 1 ..] };
 }
 

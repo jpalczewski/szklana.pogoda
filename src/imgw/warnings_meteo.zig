@@ -28,10 +28,10 @@ const Raw = struct {
 
 /// Every field is optional in the wire struct, so one malformed warning is
 /// skipped instead of discarding the whole response.
-const Source = product.Product(warnings.Warning, Raw, endpoint, parseRaw, warnings.deinitWarningItems, .{ .label = "meteo warning" });
+const source = product.Product(warnings.Warning, Raw, endpoint, parseRaw, warnings.deinitWarningItems, .{ .label = "meteo warning" });
 
-pub const parse = Source.parse;
-pub const fetch = Source.fetch;
+pub const parse = source.parse;
+pub const fetch = source.fetch;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!warnings.Warning {
     const warning_id = try value.presentText(allocator, raw.id);

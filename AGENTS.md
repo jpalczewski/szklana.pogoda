@@ -26,6 +26,8 @@ Every source file is listed in the `modules` tuple in `src/main.zig`. Add a new 
 - `PORT=18080 zig build run` — run on an alternate local port.
 - `zig build cities` — regenerate `src/antistorm/cities.json` from Antistorm; the only build step that needs the network.
 - `zig fmt src` — format all Zig sources after edits.
+- `zig build lint -- --max-warnings 0` — run zlinter (naming, unused code, swallowed errors, `undefined`; configured in `build.zig`).
+- `scripts/ziglint.sh src tools build.zig` — run ziglint with this project's rule exceptions (documented in the script); CI installs the pinned `ziglint` binary first.
 
 The server accepts `HOST`, `PORT`, `MAX_BODY_BYTES`, and `MAX_CONNECTIONS_PER_CPU` environment variables. `HOST` currently expects an IPv4 address.
 
@@ -39,7 +41,7 @@ That directory is scratch space, not source: delete it before handing off or com
 
 ## Coding Style & Naming Conventions
 
-Use `zig fmt`; do not hand-maintain formatting. Follow Zig conventions: four-space indentation, `snake_case` for functions and local variables, `PascalCase` for types, and lowercase filenames such as `routes/api.zig`.
+Use `zig fmt`; do not hand-maintain formatting. Follow Zig conventions: four-space indentation, `camelCase` for functions (including `pub const` bindings whose value is a function, such as a route handler built by a generic template), `snake_case` for local variables and namespaces (a `struct` with no fields, used only to group declarations), `PascalCase` for types, and lowercase filenames such as `routes/api.zig`. `zig build lint` enforces this (see `build.zig`'s `zlinter` rules); its exceptions for wire-format field and variable names are documented next to the rule configuration.
 
 Name every Zig identifier in English: variables, parameters, functions, types, and struct fields. The deliberate exception is the private wire structs in `src/imgw/` (`Raw`, `RawArea`, …), whose fields must be spelled exactly like IMGW's Polish JSON keys because `std.json` derives keys from field names. Keep those structs thin and map them into the English-named application model within the same file; Polish may otherwise appear only inside string literals that are genuine IMGW field names, values, or test fixtures.
 

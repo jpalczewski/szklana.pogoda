@@ -92,6 +92,7 @@ const observation_column_names = [_][]const u8{
 /// placeholders and the upsert assignments derive from this list, so they
 /// cannot drift apart.
 const observation_table_column_names = blk: {
+    // zlinter-disable-next-line no_undefined - every index is written by the loop and the line below before break :blk reads names
     var names: [observation_column_names.len + 1][]const u8 = undefined;
     for (observation_column_names, 0..) |name, index| names[index] = name;
     names[observation_column_names.len] = "source";
@@ -150,7 +151,7 @@ const hydro_timestamp_version = 1;
 /// timestamp: staying 19 characters long keeps the marker out of the
 /// `length(...) = 19` guard that selects the pre-migration rows.
 const migration_marker = "'~local-to-utc~'";
-const pragmaUserVersion = "PRAGMA user_version = " ++ std.fmt.comptimePrint("{d}", .{hydro_timestamp_version});
+const pragma_user_version = "PRAGMA user_version = " ++ std.fmt.comptimePrint("{d}", .{hydro_timestamp_version});
 
 /// The connection's page cache in kibibytes, which is the unit SQLite's
 /// `cache_size` takes when the value is negative. Its default of 2 MiB is sized
@@ -158,7 +159,7 @@ const pragmaUserVersion = "PRAGMA user_version = " ++ std.fmt.comptimePrint("{d}
 /// few minutes and reads nothing in between, so the cache is capped instead of
 /// reserved for the life of the process.
 const page_cache_kib = 512;
-const pragmaPageCache = "PRAGMA cache_size = -" ++ std.fmt.comptimePrint("{d}", .{page_cache_kib});
+const pragma_page_cache = "PRAGMA cache_size = -" ++ std.fmt.comptimePrint("{d}", .{page_cache_kib});
 
 pub const Store = struct {
     db: sqlite.Db,
@@ -197,12 +198,13 @@ pub const Store = struct {
 
     pub fn deinit(self: *Store) void {
         self.db.deinit();
+        self.* = undefined;
     }
 
     /// The connection settings the store relies on, applied once the schema is
     /// in place.
     fn tune(self: *Store) !void {
-        try self.db.exec(pragmaPageCache, .{}, .{});
+        try self.db.exec(pragma_page_cache, .{}, .{});
     }
 
     /// Hands back the page cache and the other transient memory SQLite holds
@@ -714,7 +716,7 @@ pub const Store = struct {
         try self.db.exec(publish, .{}, .{});
         try self.db.exec("DELETE FROM hydro_observations WHERE normalized_at IS NOT NULL AND normalized_at <> " ++ migration_marker, .{}, .{});
         try self.db.exec("UPDATE hydro_observations SET normalized_at = NULL WHERE normalized_at = " ++ migration_marker, .{}, .{});
-        try self.db.exec(pragmaUserVersion, .{}, .{});
+        try self.db.exec(pragma_user_version, .{}, .{});
     }
 };
 
@@ -789,7 +791,7 @@ test "column lists are derived from one source" {
     // The history select has to match `model.Observation`, so it cannot carry
     // the stored product label the insert does.
     try std.testing.expectEqualStrings(observation_select_columns, comptime joinColumns(&observation_column_names));
-    try std.testing.expect(std.mem.indexOf(u8, observation_columns, "source") != null);
+    try std.testing.expect(std.mem.find(u8, observation_columns, "source") != null);
 }
 
 fn matchesWarning(row: AreaRow, item: Warning) bool {
@@ -1176,10 +1178,16 @@ test "stores gauge readings and returns the latest one plus their history" {
 
 test "a legacy hydro timestamp is rewritten from Warsaw wall clock to UTC" {
     var path_buffer: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buffer, "/tmp/szklana-pogoda-migration-{d}.db", .{std.os.linux.getpid()});
+    const path = try std.fmt.bufPrintSentinel(&path_buffer, "/tmp/szklana-pogoda-migration-{d}.db", .{std.os.linux.getpid()}, 0);
     const cwd = std.Io.Dir.cwd();
-    cwd.deleteFile(std.testing.io, path) catch {};
-    defer cwd.deleteFile(std.testing.io, path) catch {};
+    cwd.deleteFile(std.testing.io, path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    defer cwd.deleteFile(std.testing.io, path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => std.debug.panic("failed to clean up test database {s}: {t}", .{ path, err }),
+    };
     // A database as the previous build left it: the hydro table without the
     // marker column, a row holding a Warsaw wall-clock timestamp, and a
     // user_version that still asks for the rewrite.
@@ -1230,10 +1238,16 @@ test "a legacy hydro timestamp is rewritten from Warsaw wall clock to UTC" {
 
 test "a legacy observation row is labelled with its measurement product" {
     var path_buffer: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buffer, "/tmp/szklana-pogoda-source-{d}.db", .{std.os.linux.getpid()});
+    const path = try std.fmt.bufPrintSentinel(&path_buffer, "/tmp/szklana-pogoda-source-{d}.db", .{std.os.linux.getpid()}, 0);
     const cwd = std.Io.Dir.cwd();
-    cwd.deleteFile(std.testing.io, path) catch {};
-    defer cwd.deleteFile(std.testing.io, path) catch {};
+    cwd.deleteFile(std.testing.io, path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    defer cwd.deleteFile(std.testing.io, path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => std.debug.panic("failed to clean up test database {s}: {t}", .{ path, err }),
+    };
     // A database as the previous build left it: the observation table without
     // the product label and without the coordinate columns, holding one
     // synoptic (five-digit) and one meteo (nine-digit) station.

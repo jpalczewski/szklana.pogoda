@@ -49,8 +49,8 @@ fn parseCityTable(comptime text: []const u8) []const City {
         var cities: []const City = &.{};
         var rest = text;
         while (true) {
-            const open = std.mem.indexOfScalar(u8, rest, '{') orelse break;
-            const close = std.mem.indexOfScalar(u8, rest[open..], '}') orelse
+            const open = std.mem.findScalar(u8, rest, '{') orelse break;
+            const close = std.mem.findScalar(u8, rest[open..], '}') orelse
                 @compileError("cities.json: unterminated city object");
             const object = rest[open + 1 .. open + close];
             const city: City = .{
@@ -83,15 +83,15 @@ fn checkNames(comptime cities: []const City) void {
 fn stringField(comptime object: []const u8, comptime key: []const u8) []const u8 {
     comptime {
         const quoted = "\"" ++ key ++ "\"";
-        const at = std.mem.indexOf(u8, object, quoted) orelse
+        const at = std.mem.find(u8, object, quoted) orelse
             @compileError("cities.json: a city has no " ++ quoted);
         const after = object[at + quoted.len ..];
-        const colon = std.mem.indexOfScalar(u8, after, ':') orelse
+        const colon = std.mem.findScalar(u8, after, ':') orelse
             @compileError("cities.json: " ++ quoted ++ " has no value");
         const value = after[colon + 1 ..];
-        const first = std.mem.indexOfScalar(u8, value, '"') orelse
+        const first = std.mem.findScalar(u8, value, '"') orelse
             @compileError("cities.json: " ++ quoted ++ " is not a string");
-        const second = std.mem.indexOfScalar(u8, value[first + 1 ..], '"') orelse
+        const second = std.mem.findScalar(u8, value[first + 1 ..], '"') orelse
             @compileError("cities.json: the " ++ quoted ++ " string is not terminated");
         return value[first + 1 .. first + 1 + second];
     }
@@ -102,10 +102,10 @@ fn stringField(comptime object: []const u8, comptime key: []const u8) []const u8
 fn numberField(comptime object: []const u8, comptime key: []const u8) f64 {
     comptime {
         const quoted = "\"" ++ key ++ "\"";
-        const at = std.mem.indexOf(u8, object, quoted) orelse
+        const at = std.mem.find(u8, object, quoted) orelse
             @compileError("cities.json: a city has no " ++ quoted);
         const after = object[at + quoted.len ..];
-        const colon = std.mem.indexOfScalar(u8, after, ':') orelse
+        const colon = std.mem.findScalar(u8, after, ':') orelse
             @compileError("cities.json: " ++ quoted ++ " has no value");
         const value = std.mem.trim(u8, after[colon + 1 ..], " \t\r\n");
         var end: usize = 0;
@@ -140,11 +140,13 @@ pub fn find(text: []const u8) ?CityRef {
     const wanted = std.mem.trim(u8, text, " \t");
     if (wanted.len == 0) return null;
 
+    // zlinter-disable-next-line no_undefined - fold() writes exactly wanted.len bytes below before folded[0..wanted.len] is read
     var folded: [max_name_bytes]u8 = undefined;
     if (wanted.len > folded.len) return null;
     const needle = fold(wanted, folded[0..wanted.len]);
 
     for (all, 0..) |city, index| {
+        // zlinter-disable-next-line no_undefined - fold() overwrites candidate before it is read
         var candidate: [max_name_bytes]u8 = undefined;
         if (std.mem.eql(u8, needle, fold(city.name, &candidate))) {
             return .{ .id = @intCast(index), .city = &city };

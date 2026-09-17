@@ -27,7 +27,7 @@ const warsaw_location: zeit.Location = .@"Europe/Warsaw";
 /// missing; `Clock.offsetAt` prefers the database whenever it has one.
 pub fn warsawOffsetSeconds(unix_seconds: i64) i64 {
     if (unix_seconds < 0) return std.time.s_per_hour;
-    const stamp = epoch.EpochSeconds{ .secs = @intCast(unix_seconds) };
+    const stamp: epoch.EpochSeconds = .{ .secs = @intCast(unix_seconds) };
     const year_day = stamp.getEpochDay().calculateYearDay();
     const month_day = year_day.calculateMonthDay();
     const month = month_day.month.numeric();
@@ -63,7 +63,7 @@ pub const Clock = struct {
 
     pub fn deinit(self: *Clock) void {
         if (self.zone) |*zone| zone.deinit();
-        self.* = .{};
+        self.* = undefined;
     }
 
     /// The offset in force at `unix_seconds`, from the database when there is
@@ -109,6 +109,7 @@ pub const Clock = struct {
         if (text.len != 20 or text[10] != 'T' or text[19] != 'Z') return error.InvalidData;
         // The digits are the same as in the IMGW spelling; only the separator
         // and the suffix differ, so the reader is shared.
+        // zlinter-disable-next-line no_undefined - every byte is written by the memcpy/assignment below before local is read
         var local: [19]u8 = undefined;
         @memcpy(local[0..10], text[0..10]);
         local[10] = ' ';
@@ -211,7 +212,7 @@ fn parseLocalDigits(local: []const u8) error{InvalidData}!Digits {
     // The day of the year validates against the calendar, which catches both a
     // month that cannot have that many days and a leap day in a common year.
     const day_of_year = daysBeforeMonth(year, month) + day - 1;
-    const year_day = epoch.YearAndDay{ .year = year, .day = @intCast(day_of_year) };
+    const year_day: epoch.YearAndDay = .{ .year = year, .day = @intCast(day_of_year) };
     const month_day = year_day.calculateMonthDay();
     if (month_day.month.numeric() != month or @as(u64, month_day.day_index) + 1 != day) return error.InvalidData;
 

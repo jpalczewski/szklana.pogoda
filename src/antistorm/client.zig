@@ -137,6 +137,7 @@ pub const Client = struct {
     pub fn deinit(self: *Client) void {
         for (self.entries.items) |entry| entry.deinit(self.allocator);
         self.entries.deinit(self.allocator);
+        self.* = undefined;
     }
 
     /// Resolves `selector` — a city name as a person types it, or the numeric
@@ -358,7 +359,7 @@ test "resolve accepts a name, a folded name and a numeric id" {
 /// was asked for and answers with the documented Zakopane payload. The state is
 /// a container variable, so the function pointer the client stores has no
 /// context of its own.
-const CountingFetch = struct {
+const counting_fetch = struct {
     var calls: usize = 0;
     var url_buffer: [128]u8 = undefined;
     var url_len: usize = 0;
@@ -386,32 +387,32 @@ fn unavailable(_: std.mem.Allocator, _: Io, _: []const u8) Error![]u8 {
 }
 
 test "a reading inside the TTL comes from the cache" {
-    CountingFetch.reset();
+    counting_fetch.reset();
     var client = Client.init(std.testing.allocator, std.testing.io, 300);
-    client.fetch = &CountingFetch.fetch;
+    client.fetch = &counting_fetch.fetch;
     defer client.deinit();
 
     const first = try client.get("Zakopane");
     defer first.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 1), CountingFetch.calls);
+    try std.testing.expectEqual(@as(usize, 1), counting_fetch.calls);
     try std.testing.expectEqual(@as(u64, 0), first.fetched_age_seconds);
     // The endpoint needs the id: without it Antistorm answers "no_id" as HTML.
-    try std.testing.expectEqualStrings("https://antistorm.eu/webservice.php?id=416", CountingFetch.url());
+    try std.testing.expectEqualStrings("https://antistorm.eu/webservice.php?id=416", counting_fetch.url());
 
     const second = try client.get("zakopane");
     defer second.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 1), CountingFetch.calls);
+    try std.testing.expectEqual(@as(usize, 1), counting_fetch.calls);
     try std.testing.expectEqualStrings(first.city_name, second.city_name);
 
     // A city that does not exist never reaches the endpoint either.
     try std.testing.expectError(error.UnknownCity, client.get("Nieistniejace"));
-    try std.testing.expectEqual(@as(usize, 1), CountingFetch.calls);
+    try std.testing.expectEqual(@as(usize, 1), counting_fetch.calls);
 }
 
 test "an entry older than the TTL is downloaded again" {
-    CountingFetch.reset();
+    counting_fetch.reset();
     var client = Client.init(std.testing.allocator, std.testing.io, 300);
-    client.fetch = &CountingFetch.fetch;
+    client.fetch = &counting_fetch.fetch;
     defer client.deinit();
 
     const first = try client.get("Zakopane");
@@ -422,14 +423,14 @@ test "an entry older than the TTL is downloaded again" {
 
     const second = try client.get("Zakopane");
     defer second.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 2), CountingFetch.calls);
+    try std.testing.expectEqual(@as(usize, 2), counting_fetch.calls);
     try std.testing.expectEqual(@as(u64, 0), second.fetched_age_seconds);
 }
 
 test "a second reading of the same city replaces the cached one" {
-    CountingFetch.reset();
+    counting_fetch.reset();
     var client = Client.init(std.testing.allocator, std.testing.io, 300);
-    client.fetch = &CountingFetch.fetch;
+    client.fetch = &counting_fetch.fetch;
     defer client.deinit();
 
     const first = try client.get("Zakopane");
@@ -438,7 +439,7 @@ test "a second reading of the same city replaces the cached one" {
 
     const second = try client.get("Zakopane");
     defer second.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 2), CountingFetch.calls);
+    try std.testing.expectEqual(@as(usize, 2), counting_fetch.calls);
     try std.testing.expectEqual(@as(usize, 1), client.entries.items.len);
 }
 
