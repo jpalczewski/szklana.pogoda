@@ -6,9 +6,11 @@ const router = @import("router.zig");
 const server = @import("server.zig");
 const api = @import("routes/api.zig");
 const pages = @import("routes/pages.zig");
+const storm = @import("routes/storm.zig");
 const app_log = @import("app_log.zig");
 const metrics = @import("metrics.zig");
 const metrics_route = @import("routes/metrics.zig");
+const antistorm = @import("antistorm/mod.zig");
 const imgw = @import("imgw/mod.zig");
 const weather = @import("weather/mod.zig");
 const timestamps = @import("timestamps.zig");
@@ -27,6 +29,8 @@ const modules = .{
     @import("routes/api.zig"),
     @import("routes/pages.zig"),
     @import("routes/metrics.zig"),
+    @import("routes/storm.zig"),
+    @import("antistorm/mod.zig"),
     @import("imgw/mod.zig"),
     @import("weather/mod.zig"),
 };
@@ -72,6 +76,9 @@ const Config = struct {
     database_path: []const u8 = "weather.db",
     imgw_interval_seconds: u64 = 10 * 60,
     imgw_warnings_interval_seconds: u64 = 5 * 60,
+    /// How long one Antistorm reading is reused. Antistorm recomputes every
+    /// fifteen minutes and asks not to be polled harder than that.
+    storm_cache_seconds: u64 = 5 * 60,
 
     // The host borrows storage from environ, which must outlive this config.
     fn from_env(environ: *const std.process.Environ.Map) !Config {
@@ -86,6 +93,7 @@ const Config = struct {
             .database_path = environ.get("DATABASE_PATH") orelse defaults.database_path,
             .imgw_interval_seconds = try envInt(u64, environ, "IMGW_INTERVAL_SECONDS", defaults.imgw_interval_seconds),
             .imgw_warnings_interval_seconds = try envInt(u64, environ, "IMGW_WARNINGS_INTERVAL_SECONDS", defaults.imgw_warnings_interval_seconds),
+            .storm_cache_seconds = try envInt(u64, environ, "STORM_CACHE_SECONDS", defaults.storm_cache_seconds),
         };
         try config.validate();
         return config;
@@ -95,6 +103,7 @@ const Config = struct {
         if (self.max_connections_per_cpu == 0) return error.InvalidMaxConnectionsPerCpu;
         if (self.imgw_interval_seconds == 0) return error.InvalidImgwInterval;
         if (self.imgw_warnings_interval_seconds == 0) return error.InvalidImgwWarningsInterval;
+        if (self.storm_cache_seconds == 0) return error.InvalidStormCacheInterval;
     }
 
     fn concurrent_limit(self: Config, cpu_count: usize) !usize {
@@ -121,6 +130,8 @@ const routes = [_]router.Route{
     .{ .method = .GET, .path = "/api/warnings", .handler = api.warningsActive },
     .{ .method = .GET, .path = "/api/warnings/history", .handler = api.warningsHistory },
     .{ .method = .GET, .path = "/api/warnings/revisions", .handler = api.warningsRevisions },
+    .{ .method = .GET, .path = "/api/storm/cities", .handler = storm.cities },
+    .{ .method = .GET, .path = "/api/storm/city", .handler = storm.city },
 };
 
 const metrics_routes = [_]router.Route{
@@ -148,6 +159,8 @@ pub fn main(init: std.process.Init) !void {
     };
     var observations = try weather.Store.initFile(gpa, database_path, timestamps.clock().*);
     defer observations.deinit();
+    var storm_client = antistorm.Client.init(gpa, io, config.storm_cache_seconds);
+    defer storm_client.deinit();
 
     var address = try net.IpAddress.parseIp4(config.host, config.port);
     var listener = try address.listen(io, .{ .reuse_address = true });
@@ -158,7 +171,7 @@ pub fn main(init: std.process.Init) !void {
 
     var metrics_registry = metrics.Registry.init(gpa);
     defer metrics_registry.deinit();
-    var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry, .weather_store = &observations, .io = io };
+    var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry, .weather_store = &observations, .storm = &storm_client, .io = io };
     var metrics_app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry };
     var connections: Io.Group = .init;
     defer connections.await(io) catch {};
@@ -226,6 +239,7 @@ test "config reads environment overrides" {
     try environ.put("TRUST_PROXY", "TrUe");
     try environ.put("DATABASE_PATH", "var/weather.db");
     try environ.put("IMGW_WARNINGS_INTERVAL_SECONDS", "120");
+    try environ.put("STORM_CACHE_SECONDS", "60");
 
     const config = try Config.from_env(&environ);
     try std.testing.expectEqualDeep(Config{
@@ -237,6 +251,7 @@ test "config reads environment overrides" {
         .trust_proxy = true,
         .database_path = "var/weather.db",
         .imgw_warnings_interval_seconds = 120,
+        .storm_cache_seconds = 60,
     }, config);
     try std.testing.expectEqual(@as(usize, 26), try config.concurrent_limit(3));
 
@@ -263,6 +278,13 @@ test "config rejects zero IMGW interval" {
     defer environ.deinit();
     try environ.put("IMGW_INTERVAL_SECONDS", "0");
     try std.testing.expectError(error.InvalidImgwInterval, Config.from_env(&environ));
+}
+
+test "config rejects zero storm cache interval" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    try environ.put("STORM_CACHE_SECONDS", "0");
+    try std.testing.expectError(error.InvalidStormCacheInterval, Config.from_env(&environ));
 }
 
 test "config detects multiplication and listener reservation overflow" {

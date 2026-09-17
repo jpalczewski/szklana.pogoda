@@ -1,6 +1,7 @@
 const std = @import("std");
 const http = std.http;
 const Io = std.Io;
+const antistorm = @import("antistorm/mod.zig");
 const metrics = @import("metrics.zig");
 const weather = @import("weather/mod.zig");
 
@@ -9,6 +10,9 @@ pub const App = struct {
     trust_proxy: bool = false,
     metrics: ?*metrics.Registry = null,
     weather_store: ?*weather.Store = null,
+    /// Antistorm readings; left null by tests that do not exercise the storm
+    /// routes.
+    storm: ?*antistorm.Client = null,
     /// Wall clock used by handlers that need "now"; left null by tests that
     /// do not exercise time dependent paths.
     io: ?Io = null,
@@ -19,6 +23,12 @@ pub const AppError = std.mem.Allocator.Error || error{
     BodyReadFailed,
     MemoryStatisticsUnavailable,
     WeatherStoreUnavailable,
+    /// The Antistorm endpoint could not be reached or answered with unusable
+    /// data. The site's own HTML error page for an id it does not know also
+    /// arrives here.
+    StormUnavailable,
+    /// The storm route was asked for a city that is not in the published table.
+    UnknownCity,
     PayloadTooLarge,
 };
 
@@ -157,6 +167,8 @@ pub fn errorResponse(allocator: std.mem.Allocator, path: []const u8, err: AppErr
     return switch (err) {
         error.BadRequest, error.BodyReadFailed => errorFor(allocator, path, .bad_request, .bad_request),
         error.PayloadTooLarge => errorFor(allocator, path, .payload_too_large, .payload_too_large),
+        error.UnknownCity => errorFor(allocator, path, .not_found, .city_not_found),
+        error.StormUnavailable => errorFor(allocator, path, .bad_gateway, .storm_unavailable),
         error.MemoryStatisticsUnavailable, error.WeatherStoreUnavailable, error.OutOfMemory => errorFor(allocator, path, .internal_server_error, .internal_server_error),
     };
 }
@@ -180,28 +192,34 @@ fn methodNotAllowed(routes: []const Route, request: *RequestContext) Response {
 
 const ErrorMessage = enum {
     bad_request,
+    city_not_found,
     internal_server_error,
     method_not_allowed,
     not_found,
     payload_too_large,
+    storm_unavailable,
 
     fn apiText(self: ErrorMessage) []const u8 {
         return switch (self) {
             .bad_request => "Bad request",
+            .city_not_found => "City not found",
             .internal_server_error => "Internal server error",
             .method_not_allowed => "Method not allowed",
             .not_found => "Not found",
             .payload_too_large => "Payload too large",
+            .storm_unavailable => "Storm data unavailable",
         };
     }
 
     fn text(self: ErrorMessage) []const u8 {
         return switch (self) {
             .bad_request => "bad request",
+            .city_not_found => "city not found",
             .internal_server_error => "internal server error",
             .method_not_allowed => "method not allowed",
             .not_found => "not found",
             .payload_too_large => "payload too large",
+            .storm_unavailable => "storm data unavailable",
         };
     }
 };
@@ -277,6 +295,18 @@ test "router returns JSON errors for API routes" {
 
 fn unreachableHandler(_: *App, _: *RequestContext) AppError!Response {
     unreachable;
+}
+
+test "router maps storm failures onto 404 and 502" {
+    const unknown = errorResponse(std.testing.allocator, "/api/storm/city", error.UnknownCity);
+    defer std.testing.allocator.free(unknown.body);
+    try std.testing.expectEqual(http.Status.not_found, unknown.status);
+    try std.testing.expectEqualStrings("{\"error\":\"City not found\"}", unknown.body);
+
+    const unavailable = errorResponse(std.testing.allocator, "/api/storm/city", error.StormUnavailable);
+    defer std.testing.allocator.free(unavailable.body);
+    try std.testing.expectEqual(http.Status.bad_gateway, unavailable.status);
+    try std.testing.expectEqualStrings("{\"error\":\"Storm data unavailable\"}", unavailable.body);
 }
 
 test "limit is enforced while body is read" {
