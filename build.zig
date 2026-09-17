@@ -41,26 +41,7 @@ pub fn build(b: *std.Build) void {
     const cities_step = b.step("cities", "Regenerate src/antistorm/cities.json from Antistorm");
     cities_step.dependOn(&render_cities.step);
 
-    const exe = b.addExecutable(.{
-        .name = "szklana-pogoda",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    const sqlite = b.dependency("sqlite", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const zeit = b.dependency("zeit", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    exe.root_module.addImport("i18n", i18n_module);
-    exe.root_module.addImport("sqlite", sqlite.module("sqlite"));
-    exe.root_module.addImport("zeit", zeit.module("zeit"));
-    if (target.result.os.tag == .macos) exe.root_module.linkSystemLibrary("proc", .{});
+    const exe = serverExe(b, target, optimize, i18n_source);
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the server");
@@ -69,6 +50,16 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_cmd.addArgs(args);
     run_step.dependOn(&run_cmd.step);
 
+    // A deployment builds this profile, so a local measurement of the server's
+    // memory only means something when it runs one too: the debug build keeps
+    // several megabytes of its own code and data resident, which no amount of
+    // work in the server can give back.
+    const release_exe = serverExe(b, target, .ReleaseSafe, i18n_source);
+    const run_release_step = b.step("run-release", "Run the server built with the release profile");
+    const run_release_cmd = b.addRunArtifact(release_exe);
+    if (b.args) |args| run_release_cmd.addArgs(args);
+    run_release_step.dependOn(&run_release_cmd.step);
+
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
@@ -76,9 +67,17 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    const test_sqlite = b.dependency("sqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const test_zeit = b.dependency("zeit", .{
+        .target = target,
+        .optimize = optimize,
+    });
     tests.root_module.addImport("i18n", i18n_module);
-    tests.root_module.addImport("sqlite", sqlite.module("sqlite"));
-    tests.root_module.addImport("zeit", zeit.module("zeit"));
+    tests.root_module.addImport("sqlite", test_sqlite.module("sqlite"));
+    tests.root_module.addImport("zeit", test_zeit.module("zeit"));
     if (target.result.os.tag == .macos) tests.root_module.linkSystemLibrary("proc", .{});
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
@@ -103,4 +102,41 @@ pub fn build(b: *std.Build) void {
     });
     const run_antistorm_tests = b.addRunArtifact(antistorm_tests);
     test_step.dependOn(&run_antistorm_tests.step);
+}
+
+/// The server, wired for one optimization profile. The `run` and `run-release`
+/// steps differ only in the profile they build, so the imports and the platform
+/// libraries live here once.
+fn serverExe(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    i18n_source: std.Build.LazyPath,
+) *std.Build.Step.Compile {
+    const exe = b.addExecutable(.{
+        .name = "szklana-pogoda",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const i18n_module = b.createModule(.{
+        .root_source_file = i18n_source,
+        .target = target,
+        .optimize = optimize,
+    });
+    const sqlite = b.dependency("sqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zeit = b.dependency("zeit", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("i18n", i18n_module);
+    exe.root_module.addImport("sqlite", sqlite.module("sqlite"));
+    exe.root_module.addImport("zeit", zeit.module("zeit"));
+    if (target.result.os.tag == .macos) exe.root_module.linkSystemLibrary("proc", .{});
+    return exe;
 }
