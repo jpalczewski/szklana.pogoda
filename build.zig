@@ -1,4 +1,5 @@
 const std = @import("std");
+const zlinter = @import("zlinter");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -92,6 +93,52 @@ pub fn build(b: *std.Build) void {
     });
     const run_i18n_tests = b.addRunArtifact(i18n_tests);
     test_step.dependOn(&run_i18n_tests.step);
+
+    // The linter walks only the sources this repository owns: `zig-pkg/` holds
+    // vendored dependencies and `src/web/` holds browser assets, neither of
+    // which this project is free to rename or rewrite.
+    const lint_step = b.step("lint", "Lint source code");
+    lint_step.dependOn(step: {
+        var builder = zlinter.builder(b, .{});
+        builder.addPaths(.{
+            .include = &.{ b.path("src"), b.path("tools"), b.path("build.zig") },
+        });
+        builder.addRule(.{ .builtin = .field_naming }, .{
+            // The rule's own defaults (x, y, z, i, b, it, ip, c, io), plus:
+            // `id`, `db`, and the IMGW/Antistorm wire fields `m`/`s`/`to` (see
+            // src/imgw/records.zig, src/imgw/warning_fields.zig and
+            // src/antistorm/client.zig) are clear in their one-line context;
+            // the wire fields must additionally match the source's JSON keys
+            // exactly, since std.json derives them from the field name (see
+            // AGENTS.md). build.zig cannot reach the library's internal
+            // default list, so it is repeated here.
+            // The two long names are IMGW's own field and its English mapping
+            // (src/imgw/hydro.zig and src/weather/store.zig); shortening either
+            // would break the wire-name match or make the column name unclear.
+            .struct_field_exclude_len = &.{
+                "x",  "y",  "z", "i", "b",  "it",                               "ip",                                "c", "io",
+                "id", "db", "m", "s", "to", "zjawisko_zarastania_data_pomiaru", "overgrowth_phenomenon_observed_at",
+            },
+        });
+        builder.addRule(.{ .builtin = .field_ordering }, .{});
+        builder.addRule(.{ .builtin = .declaration_naming }, .{
+            // The rule's own defaults (x, y, z, i, b, it, ip, c, io), plus:
+            // `n` (a byte count), `at` (an index) and `fd` (a POSIX file
+            // descriptor) are standard short names; `id` names an entity id
+            // throughout src/antistorm/client.zig. build.zig cannot reach the
+            // library's internal default list, so it is repeated here.
+            .decl_name_exclude_len = &.{ "x", "y", "z", "i", "b", "it", "ip", "c", "io", "n", "at", "fd", "id" },
+        });
+        builder.addRule(.{ .builtin = .function_naming }, .{});
+        builder.addRule(.{ .builtin = .file_naming }, .{});
+        builder.addRule(.{ .builtin = .switch_case_ordering }, .{});
+        builder.addRule(.{ .builtin = .no_unused }, .{});
+        builder.addRule(.{ .builtin = .no_deprecated }, .{});
+        builder.addRule(.{ .builtin = .no_orelse_unreachable }, .{});
+        builder.addRule(.{ .builtin = .no_swallow_error }, .{});
+        builder.addRule(.{ .builtin = .no_undefined }, .{});
+        break :step builder.build();
+    });
 
     const antistorm_tests = b.addTest(.{
         .root_module = b.createModule(.{
