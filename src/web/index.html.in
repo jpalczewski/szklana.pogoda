@@ -8,13 +8,21 @@
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body
-  data-loading="{{loading}}"
   data-http-error="{{http_error}}"
-  data-connection-error="{{connection_error}}"
   data-memory-unavailable="{{memory_unavailable}}"
   data-imgw-unavailable="{{imgw_unavailable}}"
   data-location-denied="{{location_denied}}"
   data-location-unavailable="{{location_unavailable}}"
+  data-imgw-search-placeholder="{{imgw_search_placeholder}}"
+  data-imgw-warning-search-placeholder="{{imgw_warning_search_placeholder}}"
+  data-imgw-warning-source-meteo="{{imgw_warning_source_meteo}}"
+  data-imgw-warning-source-hydro="{{imgw_warning_source_hydro}}"
+  data-imgw-warning-severity="{{imgw_warning_severity}}"
+  data-imgw-storm-search-placeholder="{{imgw_storm_search_placeholder}}"
+  data-imgw-storm-yes="{{imgw_storm_yes}}"
+  data-imgw-storm-no="{{imgw_storm_no}}"
+  data-imgw-storm-just-now="{{imgw_storm_just_now}}"
+  data-imgw-storm-unavailable="{{imgw_storm_unavailable}}"
 >
   <div class="window app-window">
     <div class="title-bar">
@@ -22,20 +30,6 @@
     </div>
     <div class="window-body">
       <p class="language-switcher"><a href="/" lang="pl">PL</a> | <a href="/en/" lang="en">EN</a></p>
-      <p>{{intro}}</p>
-      <button id="ping-button">{{ping_button}}</button>
-      <fieldset class="memory-panel" x-data="memory" x-init="load">
-        <legend>{{memory_title}}</legend>
-        <p class="memory-status" x-show="loading" x-cloak>{{loading}}</p>
-        <p class="memory-status" x-show="error" x-cloak x-text="error"></p>
-        <dl class="memory-stats" x-show="usage" x-cloak>
-          <dt>{{memory_rss}}</dt>
-          <dd x-text="format_bytes(usage?.rss_bytes)"></dd>
-          <dt>{{memory_virtual}}</dt>
-          <dd x-text="format_bytes(usage?.virtual_memory_bytes)"></dd>
-        </dl>
-        <button type="button" @click="load" :disabled="loading">{{memory_refresh}}</button>
-      </fieldset>
       <div class="imgw-panel" x-data="imgw" @keydown.escape.window="hide">
         <button
           type="button"
@@ -105,6 +99,26 @@
                   @keydown.left.prevent="step(-1)"
                   @keydown.right.prevent="step(1)"
                 ><a href="#imgw-panel" @click.prevent>{{imgw_tab_meteo}}</a></li>
+                <li
+                  role="tab"
+                  id="imgw-tab-warnings"
+                  data-tab="warnings"
+                  :aria-selected="tab === 'warnings' ? 'true' : 'false'"
+                  :tabindex="tab === 'warnings' ? 0 : -1"
+                  @click="select('warnings')"
+                  @keydown.left.prevent="step(-1)"
+                  @keydown.right.prevent="step(1)"
+                ><a href="#imgw-panel" @click.prevent>{{imgw_tab_warnings}}</a></li>
+                <li
+                  role="tab"
+                  id="imgw-tab-storm"
+                  data-tab="storm"
+                  :aria-selected="tab === 'storm' ? 'true' : 'false'"
+                  :tabindex="tab === 'storm' ? 0 : -1"
+                  @click="select('storm')"
+                  @keydown.left.prevent="step(-1)"
+                  @keydown.right.prevent="step(1)"
+                ><a href="#imgw-panel" @click.prevent>{{imgw_tab_storm}}</a></li>
               </menu>
               <section
                 class="window imgw-tab-body"
@@ -120,7 +134,7 @@
                     :id="`imgw-search-${tab}`"
                     x-ref="search"
                     x-model="query[tab]"
-                    placeholder="{{imgw_search_placeholder}}"
+                    :placeholder="search_placeholder"
                   />
                   <button
                     type="button"
@@ -131,125 +145,264 @@
                     @click="clear_search"
                   >×</button>
                 </div>
-                <div class="field-row imgw-nearby">
-                  <button
-                    type="button"
-                    x-show="nearby_supported"
-                    x-cloak
-                    :aria-pressed="nearby ? 'true' : 'false'"
-                    :disabled="locating"
-                    @click="toggle_nearby"
-                  >
-                    <span x-show="!nearby">{{imgw_nearby}}</span>
-                    <span x-show="nearby" x-cloak>{{imgw_nearby_off}}</span>
-                  </button>
-                  <span
-                    class="imgw-nearby-hint"
-                    x-show="active.items && !nearby_supported"
-                    x-cloak
-                  >{{imgw_nearby_unsupported}}</span>
-                  <span class="imgw-status" x-show="locating" x-cloak>{{imgw_locating}}</span>
-                  <span
+                <div class="imgw-stations" x-show="tab !== 'warnings' && tab !== 'storm'">
+                  <div class="field-row imgw-nearby">
+                    <button
+                      type="button"
+                      x-show="nearby_supported"
+                      x-cloak
+                      :aria-pressed="nearby ? 'true' : 'false'"
+                      :disabled="locating"
+                      @click="toggle_nearby"
+                    >
+                      <span x-show="!nearby">{{imgw_nearby}}</span>
+                      <span x-show="nearby" x-cloak>{{imgw_nearby_off}}</span>
+                    </button>
+                    <span
+                      class="imgw-nearby-hint"
+                      x-show="active.items && !nearby_supported"
+                      x-cloak
+                    >{{imgw_nearby_unsupported}}</span>
+                    <span class="imgw-status" x-show="locating" x-cloak>{{imgw_locating}}</span>
+                    <span
+                      class="imgw-status"
+                      x-show="location_error"
+                      x-cloak
+                      x-text="location_error"
+                    ></span>
+                  </div>
+                  <p class="imgw-status" x-show="active.loading" x-cloak>{{loading}}</p>
+                  <p class="imgw-status" x-show="active.error" x-cloak x-text="active.error"></p>
+                  <p class="imgw-count" x-show="!active.loading && !active.error" x-cloak>
+                    {{imgw_count}} <span x-text="filtered.length"></span>
+                  </p>
+                  <label class="imgw-list-label" for="imgw-list-stations">
+                    <span x-show="!nearby || !nearby_supported">{{imgw_list}}</span>
+                    <span x-show="nearby && nearby_supported" x-cloak>{{imgw_nearby_list}}</span>
+                  </label>
+                  <select class="imgw-list" id="imgw-list-stations" multiple size="12" @change="pick">
+                    <template x-for="station in filtered" :key="station.key">
+                      <option :value="station.key" x-text="describe(station)"></option>
+                    </template>
+                  </select>
+                  <p
                     class="imgw-status"
-                    x-show="location_error"
+                    x-show="!active.loading && !active.error && filtered.length === 0"
                     x-cloak
-                    x-text="location_error"
-                  ></span>
-                </div>
-                <p class="imgw-status" x-show="active.loading" x-cloak>{{loading}}</p>
-                <p class="imgw-status" x-show="active.error" x-cloak x-text="active.error"></p>
-                <p class="imgw-count" x-show="!active.loading && !active.error" x-cloak>
-                  {{imgw_count}} <span x-text="filtered.length"></span>
-                </p>
-                <label class="imgw-list-label" :for="`imgw-list-${tab}`">
-                  <span x-show="!nearby || !nearby_supported">{{imgw_list}}</span>
-                  <span x-show="nearby && nearby_supported" x-cloak>{{imgw_nearby_list}}</span>
-                </label>
-                <select class="imgw-list" :id="`imgw-list-${tab}`" multiple size="12" @change="pick">
-                  <template x-for="station in filtered" :key="station.station_id">
-                    <option :value="station.station_id" x-text="describe(station)"></option>
-                  </template>
-                </select>
-                <p
-                  class="imgw-status"
-                  x-show="!active.loading && !active.error && filtered.length === 0"
-                  x-cloak
-                >{{imgw_empty}}</p>
-                <p class="imgw-status" x-show="!active.selected && !active.loading" x-cloak>{{imgw_no_selection}}</p>
-                <div class="imgw-details" x-show="active.selected" x-cloak>
-                  <h3 class="imgw-details-title">{{imgw_details}}</h3>
-                  <p class="imgw-status" x-show="active.detail_loading" x-cloak>{{loading}}</p>
-                  <p class="imgw-status" x-show="active.detail_error" x-cloak x-text="active.detail_error"></p>
-                  <dl
-                    class="imgw-detail-list"
-                    x-show="active.kind === 'weather' && active.detail"
-                    x-cloak
-                  >
-                    <dt>{{imgw_station_id}}</dt>
-                    <dd x-text="format_value(active.detail?.station_id)"></dd>
-                    <dt>{{imgw_station_name}}</dt>
-                    <dd x-text="format_value(active.detail?.station_name)"></dd>
-                    <dt>{{imgw_observed_at}}</dt>
-                    <dd x-text="format_value(active.detail?.observed_at)"></dd>
-                    <dt>{{imgw_temperature}}</dt>
-                    <dd x-text="format_value(active.detail?.temperature_c, '°C')"></dd>
-                    <dt>{{imgw_wind_speed}}</dt>
-                    <dd x-text="format_value(active.detail?.wind_speed_m_s, 'm/s')"></dd>
-                    <dt>{{imgw_wind_direction}}</dt>
-                    <dd x-text="format_value(active.detail?.wind_direction_deg, '°')"></dd>
-                    <dt>{{imgw_humidity}}</dt>
-                    <dd x-text="format_value(active.detail?.relative_humidity_percent, '%')"></dd>
-                    <dt>{{imgw_precipitation}}</dt>
-                    <dd x-text="format_value(active.detail?.precipitation_mm, 'mm')"></dd>
-                    <dt>{{imgw_pressure}}</dt>
-                    <dd x-text="format_value(active.detail?.pressure_hpa, 'hPa')"></dd>
-                    <template x-if="active.detail?.latitude != null">
+                  >{{imgw_empty}}</p>
+                  <p class="imgw-status" x-show="!active.selected && !active.loading" x-cloak>{{imgw_no_selection}}</p>
+                  <div class="imgw-details" x-show="active.selected" x-cloak>
+                    <h3 class="imgw-details-title">{{imgw_details}}</h3>
+                    <p class="imgw-status" x-show="active.detail_loading" x-cloak>{{loading}}</p>
+                    <p class="imgw-status" x-show="active.detail_error" x-cloak x-text="active.detail_error"></p>
+                    <dl
+                      class="imgw-detail-list"
+                      x-show="active.kind === 'weather' && active.detail"
+                      x-cloak
+                    >
+                      <dt>{{imgw_station_id}}</dt>
+                      <dd x-text="format_value(active.detail?.station_id)"></dd>
+                      <dt>{{imgw_station_name}}</dt>
+                      <dd x-text="format_value(active.detail?.station_name)"></dd>
+                      <dt>{{imgw_observed_at}}</dt>
+                      <dd x-text="format_value(active.detail?.observed_at)"></dd>
+                      <dt>{{imgw_temperature}}</dt>
+                      <dd x-text="format_value(active.detail?.temperature_c, '°C')"></dd>
+                      <dt>{{imgw_wind_speed}}</dt>
+                      <dd x-text="format_value(active.detail?.wind_speed_m_s, 'm/s')"></dd>
+                      <dt>{{imgw_wind_direction}}</dt>
+                      <dd x-text="format_value(active.detail?.wind_direction_deg, '°')"></dd>
+                      <dt>{{imgw_humidity}}</dt>
+                      <dd x-text="format_value(active.detail?.relative_humidity_percent, '%')"></dd>
+                      <dt>{{imgw_precipitation}}</dt>
+                      <dd x-text="format_value(active.detail?.precipitation_mm, 'mm')"></dd>
+                      <dt>{{imgw_pressure}}</dt>
+                      <dd x-text="format_value(active.detail?.pressure_hpa, 'hPa')"></dd>
+                      <template x-if="active.detail?.latitude != null">
+                        <dt>{{imgw_coordinates}}</dt>
+                      </template>
+                      <template x-if="active.detail?.latitude != null">
+                        <dd x-text="coordinates(active.detail)"></dd>
+                      </template>
+                    </dl>
+                    <dl
+                      class="imgw-detail-list"
+                      x-show="active.kind === 'hydro' && active.detail"
+                      x-cloak
+                    >
+                      <dt>{{imgw_station_id}}</dt>
+                      <dd x-text="format_value(active.detail?.station_id)"></dd>
+                      <dt>{{imgw_station_name}}</dt>
+                      <dd x-text="format_value(active.detail?.station_name)"></dd>
+                      <dt>{{imgw_river}}</dt>
+                      <dd x-text="format_value(active.detail?.river)"></dd>
+                      <dt>{{imgw_voivodeship}}</dt>
+                      <dd x-text="format_value(active.detail?.voivodeship)"></dd>
+                      <dt>{{imgw_water_level}}</dt>
+                      <dd x-text="format_value(active.detail?.water_level_cm, 'cm')"></dd>
+                      <dt>{{imgw_water_level_status}}</dt>
+                      <dd x-text="format_value(active.detail?.water_level_status)"></dd>
+                      <dt>{{imgw_water_level_at}}</dt>
+                      <dd x-text="format_value(active.detail?.water_level_observed_at)"></dd>
+                      <dt>{{imgw_water_temperature}}</dt>
+                      <dd x-text="format_value(active.detail?.water_temperature_c, '°C')"></dd>
+                      <dt>{{imgw_flow}}</dt>
+                      <dd x-text="format_value(active.detail?.flow_m3_s, 'm³/s')"></dd>
+                      <dt>{{imgw_warning_level}}</dt>
+                      <dd x-text="format_value(active.detail?.warning_level_cm, 'cm')"></dd>
+                      <dt>{{imgw_alarm_level}}</dt>
+                      <dd x-text="format_value(active.detail?.alarm_level_cm, 'cm')"></dd>
+                      <dt>{{imgw_gauge_zero}}</dt>
+                      <dd x-text="format_value(active.detail?.gauge_zero_m, 'm')"></dd>
+                      <dt>{{imgw_river_km}}</dt>
+                      <dd x-text="format_value(active.detail?.river_km, 'km')"></dd>
                       <dt>{{imgw_coordinates}}</dt>
-                    </template>
-                    <template x-if="active.detail?.latitude != null">
                       <dd x-text="coordinates(active.detail)"></dd>
+                      <dt>{{imgw_founded_year}}</dt>
+                      <dd x-text="format_value(active.detail?.founded_year)"></dd>
+                      <dt>{{imgw_ice_phenomenon}}</dt>
+                      <dd x-text="format_value(active.detail?.ice_phenomenon)"></dd>
+                      <dt>{{imgw_overgrowth_phenomenon}}</dt>
+                      <dd x-text="format_value(active.detail?.overgrowth_phenomenon)"></dd>
+                    </dl>
+                  </div>
+                </div>
+                <div class="imgw-warnings" x-show="tab === 'warnings'" x-cloak>
+                  <div class="field-row imgw-warning-source">
+                    <label for="imgw-warning-source">{{imgw_warning_source_filter}}</label>
+                    <select id="imgw-warning-source" x-model="source_filter">
+                      <option value="">{{imgw_warning_source_all}}</option>
+                      <option value="meteo">{{imgw_warning_source_meteo}}</option>
+                      <option value="hydro">{{imgw_warning_source_hydro}}</option>
+                    </select>
+                  </div>
+                  <p class="imgw-status" x-show="active.loading" x-cloak>{{loading}}</p>
+                  <p class="imgw-status" x-show="active.error" x-cloak x-text="active.error"></p>
+                  <p class="imgw-count" x-show="!active.loading && !active.error" x-cloak>
+                    {{imgw_warning_count}} <span x-text="filtered.length"></span>
+                  </p>
+                  <label class="imgw-list-label" for="imgw-list-warnings">{{imgw_warning_list}}</label>
+                  <select class="imgw-list" id="imgw-list-warnings" multiple size="12" @change="pick">
+                    <template x-for="warning in filtered" :key="warning.key">
+                      <option :value="warning.key" x-text="describe(warning)"></option>
                     </template>
-                  </dl>
-                  <dl
-                    class="imgw-detail-list"
-                    x-show="active.kind === 'hydro' && active.detail"
+                  </select>
+                  <p
+                    class="imgw-status"
+                    x-show="!active.loading && !active.error && (active.items ?? []).length === 0"
                     x-cloak
-                  >
-                    <dt>{{imgw_station_id}}</dt>
-                    <dd x-text="format_value(active.detail?.station_id)"></dd>
-                    <dt>{{imgw_station_name}}</dt>
-                    <dd x-text="format_value(active.detail?.station_name)"></dd>
-                    <dt>{{imgw_river}}</dt>
-                    <dd x-text="format_value(active.detail?.river)"></dd>
-                    <dt>{{imgw_voivodeship}}</dt>
-                    <dd x-text="format_value(active.detail?.voivodeship)"></dd>
-                    <dt>{{imgw_water_level}}</dt>
-                    <dd x-text="format_value(active.detail?.water_level_cm, 'cm')"></dd>
-                    <dt>{{imgw_water_level_status}}</dt>
-                    <dd x-text="format_value(active.detail?.water_level_status)"></dd>
-                    <dt>{{imgw_water_level_at}}</dt>
-                    <dd x-text="format_value(active.detail?.water_level_observed_at)"></dd>
-                    <dt>{{imgw_water_temperature}}</dt>
-                    <dd x-text="format_value(active.detail?.water_temperature_c, '°C')"></dd>
-                    <dt>{{imgw_flow}}</dt>
-                    <dd x-text="format_value(active.detail?.flow_m3_s, 'm³/s')"></dd>
-                    <dt>{{imgw_warning_level}}</dt>
-                    <dd x-text="format_value(active.detail?.warning_level_cm, 'cm')"></dd>
-                    <dt>{{imgw_alarm_level}}</dt>
-                    <dd x-text="format_value(active.detail?.alarm_level_cm, 'cm')"></dd>
-                    <dt>{{imgw_gauge_zero}}</dt>
-                    <dd x-text="format_value(active.detail?.gauge_zero_m, 'm')"></dd>
-                    <dt>{{imgw_river_km}}</dt>
-                    <dd x-text="format_value(active.detail?.river_km, 'km')"></dd>
-                    <dt>{{imgw_coordinates}}</dt>
-                    <dd x-text="coordinates(active.detail)"></dd>
-                    <dt>{{imgw_founded_year}}</dt>
-                    <dd x-text="format_value(active.detail?.founded_year)"></dd>
-                    <dt>{{imgw_ice_phenomenon}}</dt>
-                    <dd x-text="format_value(active.detail?.ice_phenomenon)"></dd>
-                    <dt>{{imgw_overgrowth_phenomenon}}</dt>
-                    <dd x-text="format_value(active.detail?.overgrowth_phenomenon)"></dd>
-                  </dl>
+                  >{{imgw_warning_empty_all}}</p>
+                  <p
+                    class="imgw-status"
+                    x-show="!active.loading && !active.error && (active.items ?? []).length > 0 && filtered.length === 0"
+                    x-cloak
+                  >{{imgw_warning_empty_filter}}</p>
+                  <p class="imgw-status" x-show="!active.selected && !active.loading" x-cloak>{{imgw_warning_no_selection}}</p>
+                  <div class="imgw-details" x-show="active.selected" x-cloak>
+                    <h3 class="imgw-details-title">
+                      <span x-text="format_value(active.detail?.event)"></span>
+                      <span
+                        class="imgw-warning-badge"
+                        :class="severity_class(active.detail)"
+                        x-text="severity_label(active.detail)"
+                      ></span>
+                    </h3>
+                    <dl class="imgw-detail-list">
+                      <dt>{{imgw_warning_source}}</dt>
+                      <dd x-text="source_label(active.detail)"></dd>
+                      <dt>{{imgw_warning_severity}}</dt>
+                      <dd x-text="severity_label(active.detail)"></dd>
+                      <dt>{{imgw_warning_probability}}</dt>
+                      <dd x-text="format_value(active.detail?.probability_percent, '%')"></dd>
+                      <dt>{{imgw_warning_valid_from}}</dt>
+                      <dd x-text="format_value(active.detail?.effective_from)"></dd>
+                      <dt>{{imgw_warning_valid_to}}</dt>
+                      <dd x-text="format_value(active.detail?.effective_to)"></dd>
+                      <dt>{{imgw_warning_office}}</dt>
+                      <dd x-text="format_value(active.detail?.office)"></dd>
+                      <dt>{{imgw_warning_published}}</dt>
+                      <dd x-text="format_value(active.detail?.published_at)"></dd>
+                    </dl>
+                    <h4 class="imgw-warning-heading">{{imgw_warning_content}}</h4>
+                    <p class="imgw-warning-text" x-text="format_value(active.detail?.content)"></p>
+                    <template x-if="active.detail?.comment">
+                      <div>
+                        <h4 class="imgw-warning-heading">{{imgw_warning_comment}}</h4>
+                        <p class="imgw-warning-text" x-text="active.detail.comment"></p>
+                      </div>
+                    </template>
+                    <h4 class="imgw-warning-heading">{{imgw_warning_areas}}</h4>
+                    <ul class="imgw-warning-areas" x-show="warning_areas(active.detail).length > 0">
+                      <template x-for="(area, index) in warning_areas(active.detail)" :key="index">
+                        <li x-text="area"></li>
+                      </template>
+                    </ul>
+                    <p
+                      class="imgw-status"
+                      x-show="warning_areas(active.detail).length === 0"
+                    >{{imgw_warning_no_areas}}</p>
+                  </div>
+                </div>
+                <div class="imgw-storm" x-show="tab === 'storm'" x-cloak>
+                  <p class="imgw-status" x-show="active.loading" x-cloak>{{loading}}</p>
+                  <p class="imgw-status" x-show="active.error" x-cloak x-text="active.error"></p>
+                  <p class="imgw-count" x-show="!active.loading && !active.error" x-cloak>
+                    {{imgw_storm_count}} <span x-text="filtered.length"></span>
+                  </p>
+                  <label class="imgw-list-label" for="imgw-list-storm">{{imgw_storm_list}}</label>
+                  <select class="imgw-list" id="imgw-list-storm" multiple size="12" @change="pick">
+                    <template x-for="city in filtered" :key="city.key">
+                      <option :value="city.key" x-text="describe(city)"></option>
+                    </template>
+                  </select>
+                  <p
+                    class="imgw-status"
+                    x-show="!active.loading && !active.error && filtered.length === 0"
+                    x-cloak
+                  >{{imgw_storm_empty}}</p>
+                  <div class="field-row imgw-storm-fetch">
+                    <button
+                      type="button"
+                      :disabled="!active.selected || active.detail_loading"
+                      @click="load_storm"
+                    >{{imgw_storm_fetch}}</button>
+                    <span
+                      class="imgw-status"
+                      x-show="!active.selected && !active.loading"
+                      x-cloak
+                    >{{imgw_storm_no_selection}}</span>
+                  </div>
+                  <div class="imgw-details" x-show="active.selected" x-cloak>
+                    <h3 class="imgw-details-title">
+                      {{imgw_storm_detail}} <span x-text="format_value(active.selected?.city_name)"></span>
+                    </h3>
+                    <p class="imgw-status" x-show="active.detail_loading" x-cloak>{{loading}}</p>
+                    <p class="imgw-status" x-show="active.detail_error" x-cloak x-text="active.detail_error"></p>
+                    <dl class="imgw-detail-list" x-show="active.detail" x-cloak>
+                      <dt>{{imgw_storm_city_id}}</dt>
+                      <dd x-text="format_value(active.detail?.city_id)"></dd>
+                      <dt>{{imgw_storm_city_name}}</dt>
+                      <dd x-text="format_value(active.detail?.city_name)"></dd>
+                      <dt>{{imgw_storm_probability}}</dt>
+                      <dd x-text="format_value(active.detail?.storm_probability, '%')"></dd>
+                      <dt>{{imgw_storm_minutes}}</dt>
+                      <dd x-text="format_storm_minutes(active.detail?.storm_minutes)"></dd>
+                      <dt>{{imgw_storm_alarm}}</dt>
+                      <dd x-text="active.detail ? format_flag(active.detail.storm_alarm) : '—'"></dd>
+                      <dt>{{imgw_storm_rain_probability}}</dt>
+                      <dd x-text="format_value(active.detail?.rain_probability, '%')"></dd>
+                      <dt>{{imgw_storm_rain_minutes}}</dt>
+                      <dd x-text="format_storm_minutes(active.detail?.rain_minutes)"></dd>
+                      <dt>{{imgw_storm_rain_alarm}}</dt>
+                      <dd x-text="active.detail ? format_flag(active.detail.rain_alarm) : '—'"></dd>
+                      <dt>{{imgw_storm_active}}</dt>
+                      <dd x-text="format_value(active.detail?.active_storm)"></dd>
+                      <dt>{{imgw_coordinates}}</dt>
+                      <dd x-text="coordinates(active.detail)"></dd>
+                      <dt>{{imgw_storm_fetched}}</dt>
+                      <dd x-text="describe_age(active.detail)"></dd>
+                    </dl>
+                  </div>
                 </div>
               </section>
             </div>
@@ -295,6 +448,21 @@
             </div>
             <div class="window-body">
               <p>{{about_body}}</p>
+              <p class="about-attribution">{{about_source}}</p>
+              <p class="about-attribution">{{about_processed}}</p>
+              <p class="about-attribution">{{about_antistorm}} (<a href="https://antistorm.eu/" rel="noopener noreferrer">https://antistorm.eu/</a>).</p>
+              <fieldset class="memory-panel">
+                <legend>{{memory_title}}</legend>
+                <p class="memory-status" x-show="loading" x-cloak>{{loading}}</p>
+                <p class="memory-status" x-show="error" x-cloak x-text="error"></p>
+                <dl class="memory-stats" x-show="usage" x-cloak>
+                  <dt>{{memory_rss}}</dt>
+                  <dd x-text="format_bytes(usage?.rss_bytes)"></dd>
+                  <dt>{{memory_virtual}}</dt>
+                  <dd x-text="format_bytes(usage?.virtual_memory_bytes)"></dd>
+                </dl>
+                <button type="button" @click="load" :disabled="loading">{{memory_refresh}}</button>
+              </fieldset>
               <div class="field-row about-actions">
                 <button type="button" @click="hide">{{close}}</button>
               </div>
@@ -302,9 +470,6 @@
           </div>
         </div>
       </div>
-    </div>
-    <div class="status-bar">
-      <p class="status-bar-field" id="pong">{{ready}}</p>
     </div>
   </div>
 

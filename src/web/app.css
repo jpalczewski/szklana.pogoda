@@ -46,8 +46,18 @@ body {
   margin-top: 1rem;
 }
 
+/* The about launcher sits at the right edge of the window. Its dialog
+ * backdrop is fixed against the viewport, so it is not a flex item here. */
+.about-panel {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .modal-backdrop {
-  align-items: center;
+  /* Auto margins on the window centre it while it fits and keep its title bar
+   * in reach once it is taller than the viewport, which `align-items: center`
+   * would clip out of the scrollable area. */
+  align-items: flex-start;
   background: rgba(0, 0, 0, 0.35);
   display: flex;
   inset: 0;
@@ -56,6 +66,11 @@ body {
   padding: 1rem;
   position: fixed;
   z-index: 10;
+}
+
+.about-window,
+.imgw-window {
+  margin: auto;
 }
 
 .about-window {
@@ -72,6 +87,13 @@ body {
 .imgw-window .title-bar {
   touch-action: none;
   user-select: none;
+}
+
+/* IMGW's terms require every work built on its data to name the source and
+ * state that the data was processed, so every notice sits with the about text
+ * at the same size, separated only by a gap. */
+.about-attribution {
+  margin: 0.5rem 0 0;
 }
 
 .about-actions {
@@ -165,6 +187,87 @@ body {
 
 .imgw-detail-list dd {
   text-align: right;
+}
+
+/* The warnings tab reuses the station list geometry; only the product filter
+ * and the warning-specific blocks below the list are its own. */
+.imgw-warning-source {
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* The storm tab picks a city from the list and asks for its reading
+ * explicitly, so the fetch button sits under the list next to the hint that
+ * appears while nothing is selected. */
+.imgw-storm-fetch {
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.imgw-storm-fetch button {
+  flex: none;
+}
+
+.imgw-storm-fetch .imgw-status {
+  margin: 0;
+}
+
+.imgw-warning-badge {
+  border: 1px solid #000;
+  font-size: 0.7rem;
+  margin-left: 0.5rem;
+  padding: 0 0.35rem;
+  vertical-align: middle;
+}
+
+.imgw-warning-badge.severity-3 {
+  background: #b00020;
+  color: #fff;
+}
+
+.imgw-warning-badge.severity-2 {
+  background: #e07000;
+  color: #fff;
+}
+
+.imgw-warning-badge.severity-1 {
+  background: #f0d000;
+  color: #000;
+}
+
+/* IMGW uses 0 and negative degrees for a long-term drought. */
+.imgw-warning-badge.severity-low {
+  background: #2b6cb0;
+  color: #fff;
+}
+
+.imgw-warning-badge.severity-none {
+  background: #c0c0c0;
+  color: #000;
+}
+
+.imgw-warning-heading {
+  font-size: 0.85rem;
+  margin: 0.75rem 0 0.25rem;
+}
+
+/* IMGW puts line breaks in the warning text, so it is shown as written. */
+.imgw-warning-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* A drought warning can name dozens of basins. */
+.imgw-warning-areas {
+  margin: 0;
+  max-height: 8rem;
+  overflow: auto;
+  padding-left: 1.25rem;
+}
+
+.imgw-warning-areas li {
+  margin: 0.15rem 0;
 }
 
 /*
