@@ -1,6 +1,4 @@
 const std = @import("std");
-const Io = std.Io;
-const epoch = std.time.epoch;
 
 /// IMGW publishes meteorological and hydrological warnings through two
 /// separate endpoints that share almost no field names. Both are normalized
@@ -103,80 +101,10 @@ fn hashOptionalInt(hasher: *std.hash.Wyhash, value: ?i16) void {
 }
 
 /// True while IMGW still lists the warning as valid, that is until
-/// `effective_to` passes. `local_now` must come from `localNow`/`localTime` so
+/// `effective_to` passes. `local_now` must come from `timestamps.Clock`, so
 /// both sides are in the same Europe/Warsaw wall-clock format.
 pub fn isActive(warning: Warning, local_now: []const u8) bool {
     return std.mem.order(u8, warning.effective_to, local_now) != .lt;
-}
-
-pub fn localNow(allocator: std.mem.Allocator, io: Io) ![]u8 {
-    return localTime(allocator, Io.Clock.real.now(io).toSeconds());
-}
-
-/// Renders a Unix timestamp as the Europe/Warsaw local time format IMGW uses.
-pub fn localTime(allocator: std.mem.Allocator, unix_seconds: i64) ![]u8 {
-    const offset = warsawOffsetSeconds(unix_seconds);
-    return formatUtc(allocator, unix_seconds + offset);
-}
-
-/// Central European Time is UTC+1, Central European Summer Time is UTC+2.
-/// Since 1996 the switch happens at 01:00 UTC on the last Sunday of March and
-/// the last Sunday of October, which needs no timezone database.
-pub fn warsawOffsetSeconds(unix_seconds: i64) i64 {
-    if (unix_seconds < 0) return std.time.s_per_hour;
-    const stamp = epoch.EpochSeconds{ .secs = @intCast(unix_seconds) };
-    const year_day = stamp.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const month = month_day.month.numeric();
-    if (month < 3 or month > 10) return std.time.s_per_hour;
-    if (month > 3 and month < 10) return 2 * std.time.s_per_hour;
-
-    const switch_day = lastSundayOfMonth(year_day.year, month);
-    const day = @as(i64, month_day.day_index) + 1;
-    const hour: i64 = stamp.getDaySeconds().getHoursIntoDay();
-    const after_switch = day > switch_day or (day == switch_day and hour >= 1);
-    if (month == 3) return if (after_switch) 2 * std.time.s_per_hour else std.time.s_per_hour;
-    return if (after_switch) std.time.s_per_hour else 2 * std.time.s_per_hour;
-}
-
-fn lastSundayOfMonth(year: epoch.Year, month: u4) i64 {
-    const days_in_month: i64 = epoch.getDaysInMonth(year, @enumFromInt(month));
-    const first_weekday = @mod(daysBeforeYear(year) + daysBeforeMonth(year, month) + 4, 7);
-    return days_in_month - @mod(first_weekday + days_in_month - 1, 7);
-}
-
-fn daysBeforeYear(year: epoch.Year) i64 {
-    var days: i64 = 0;
-    var current: epoch.Year = epoch.epoch_year;
-    while (current < year) : (current += 1) {
-        days += if (epoch.isLeapYear(current)) 366 else 365;
-    }
-    return days;
-}
-
-fn daysBeforeMonth(year: epoch.Year, month: u4) i64 {
-    var days: i64 = 0;
-    var current: u4 = 1;
-    while (current < month) : (current += 1) {
-        days += epoch.getDaysInMonth(year, @enumFromInt(current));
-    }
-    return days;
-}
-
-fn formatUtc(allocator: std.mem.Allocator, unix_seconds: i64) ![]u8 {
-    if (unix_seconds < 0) return error.InvalidTime;
-    const stamp = epoch.EpochSeconds{ .secs = @intCast(unix_seconds) };
-    const year_day = stamp.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = stamp.getDaySeconds();
-    return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{
-        year_day.year,
-        month_day.month.numeric(),
-        @as(u6, month_day.day_index) + 1,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
-        day_seconds.getSecondsIntoMinute(),
-    });
 }
 
 pub fn deinitWarnings(allocator: std.mem.Allocator, items: []Warning) void {
@@ -210,25 +138,6 @@ pub fn deinitWarningItems(allocator: std.mem.Allocator, items: []Warning) void {
         allocator.free(item.last_seen_at);
         deinitAreas(allocator, item.areas);
     }
-}
-
-test "warsaw offset follows the last Sunday of March and October" {
-    try std.testing.expectEqual(@as(i64, 3600), warsawOffsetSeconds(1768478400)); // 2026-01-15 12:00 UTC
-    try std.testing.expectEqual(@as(i64, 7200), warsawOffsetSeconds(1784116800)); // 2026-07-15 12:00 UTC
-    try std.testing.expectEqual(@as(i64, 3600), warsawOffsetSeconds(1774744200)); // 2026-03-29 00:30 UTC
-    try std.testing.expectEqual(@as(i64, 7200), warsawOffsetSeconds(1774746000)); // 2026-03-29 01:00 UTC
-    try std.testing.expectEqual(@as(i64, 7200), warsawOffsetSeconds(1792889999)); // 2026-10-25 00:59:59 UTC
-    try std.testing.expectEqual(@as(i64, 3600), warsawOffsetSeconds(1792890000)); // 2026-10-25 01:00 UTC
-}
-
-test "local time renders IMGW style timestamps" {
-    const winter = try localTime(std.testing.allocator, 1768478400);
-    defer std.testing.allocator.free(winter);
-    try std.testing.expectEqualStrings("2026-01-15 13:00:00", winter);
-
-    const summer = try localTime(std.testing.allocator, 1784116800);
-    defer std.testing.allocator.free(summer);
-    try std.testing.expectEqualStrings("2026-07-15 14:00:00", summer);
 }
 
 test "active warnings are the ones not yet expired" {

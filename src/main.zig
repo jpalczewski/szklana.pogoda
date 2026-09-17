@@ -11,6 +11,7 @@ const metrics = @import("metrics.zig");
 const metrics_route = @import("routes/metrics.zig");
 const imgw = @import("imgw/mod.zig");
 const weather = @import("weather/mod.zig");
+const timestamps = @import("timestamps.zig");
 const warnings = @import("warnings.zig");
 
 /// Every module of the server, named once so the analysis below and the test
@@ -21,6 +22,7 @@ const modules = .{
     @import("process_memory.zig"),
     @import("router.zig"),
     @import("server.zig"),
+    @import("timestamps.zig"),
     @import("warnings.zig"),
     @import("routes/api.zig"),
     @import("routes/pages.zig"),
@@ -130,8 +132,6 @@ pub fn main(init: std.process.Init) !void {
     const config = try Config.from_env(init.environ_map);
     const database_path = try gpa.dupeZ(u8, config.database_path);
     defer gpa.free(database_path);
-    var observations = try weather.Store.initFile(database_path);
-    defer observations.deinit();
 
     const cpu_count = std.Thread.getCpuCount() catch 1;
     var threaded: Io.Threaded = .init(gpa, .{
@@ -139,6 +139,15 @@ pub fn main(init: std.process.Init) !void {
     });
     defer threaded.deinit();
     const io = threaded.io();
+
+    // The timezone database has to be read before any listener starts, so the
+    // clock every task reads is complete before the first task runs.
+    timestamps.initSystemTimeZone(gpa, io) catch |err| {
+        std.log.warn("no timezone database ({t}), using the fixed Warsaw rule", .{err});
+        timestamps.useFallbackClock();
+    };
+    var observations = try weather.Store.initFile(gpa, database_path, timestamps.clock().*);
+    defer observations.deinit();
 
     var address = try net.IpAddress.parseIp4(config.host, config.port);
     var listener = try address.listen(io, .{ .reuse_address = true });

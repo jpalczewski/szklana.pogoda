@@ -102,3 +102,34 @@ pub fn deinitHydro(allocator: std.mem.Allocator, items: []HydroObservation) void
     deinitHydroItems(allocator, items);
     allocator.free(items);
 }
+
+/// The hydro timestamp fields, in the order the parser fills them. They all
+/// carry the same IMGW wall-clock form and all have to reach the store as UTC.
+pub const hydro_timestamp_fields = [_][]const u8{
+    "water_level_observed_at",
+    "water_temperature_observed_at",
+    "flow_observed_at",
+    "ice_phenomenon_observed_at",
+    "overgrowth_phenomenon_observed_at",
+};
+
+/// Rewrites every timestamp of a hydro batch from Europe/Warsaw wall clock to
+/// the UTC form the store keeps, through `resolve` (which returns an owned
+/// string per reading). The replacements are made in place, so the batch's
+/// ownership rules do not change.
+pub fn utcHydroTimestamps(
+    allocator: std.mem.Allocator,
+    items: []HydroObservation,
+    context: anytype,
+    comptime resolve: fn (@TypeOf(context), std.mem.Allocator, []const u8) anyerror![]u8,
+) !void {
+    for (items) |*item| {
+        inline for (hydro_timestamp_fields) |field| {
+            if (@field(item, field)) |local| {
+                const utc = try resolve(context, allocator, local);
+                allocator.free(local);
+                @field(item, field) = utc;
+            }
+        }
+    }
+}

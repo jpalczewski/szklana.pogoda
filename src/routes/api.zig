@@ -1,6 +1,7 @@
 const std = @import("std");
 const router = @import("../router.zig");
 const process_memory = @import("../process_memory.zig");
+const timestamps = @import("../timestamps.zig");
 const warnings = @import("../warnings.zig");
 const weather = @import("../weather/mod.zig");
 
@@ -109,7 +110,7 @@ fn isTeryt(value: []const u8) bool {
 
 fn currentLocalTime(app: *router.App, allocator: std.mem.Allocator) router.AppError![]u8 {
     const io = app.io orelse return error.WeatherStoreUnavailable;
-    return warnings.localNow(allocator, io) catch |err| {
+    return timestamps.clock().localNow(allocator, io) catch |err| {
         std.log.err("reading the wall clock failed: {t}", .{err});
         return error.WeatherStoreUnavailable;
     };
@@ -228,7 +229,7 @@ test "memory endpoint only allows GET" {
 }
 
 test "weather history returns observations for one station" {
-    var store = try weather.Store.initMemory();
+    var store = try weather.Store.initMemory(std.testing.allocator);
     defer store.deinit();
     try store.record(.{
         .station_id = "12424",
@@ -263,7 +264,7 @@ test "weather history returns observations for one station" {
 test "weather history requires a station ID" {
     // A handler reaches the query check only once it has a store, so the test
     // provides an empty one.
-    var store = try weather.Store.initMemory();
+    var store = try weather.Store.initMemory(std.testing.allocator);
     defer store.deinit();
     var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store };
     var request: router.RequestContext = .{
@@ -279,7 +280,7 @@ test "weather history requires a station ID" {
 }
 
 test "hydro history requires a station ID" {
-    var store = try weather.Store.initMemory();
+    var store = try weather.Store.initMemory(std.testing.allocator);
     defer store.deinit();
     var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store };
     var request: router.RequestContext = .{
@@ -294,7 +295,7 @@ test "hydro history requires a station ID" {
 }
 
 test "weather stations returns city to station mapping" {
-    var store = try weather.Store.initMemory();
+    var store = try weather.Store.initMemory(std.testing.allocator);
     defer store.deinit();
     try store.record(.{
         .station_id = "12424",
@@ -341,7 +342,7 @@ fn warningFixture() weather.Warning {
 }
 
 test "warnings endpoint returns the active set as JSON" {
-    var store = try weather.Store.initMemory();
+    var store = try weather.Store.initMemory(std.testing.allocator);
     defer store.deinit();
     _ = try store.recordWarnings(&.{warningFixture()}, "2026-09-16 23:05:00");
 
@@ -369,7 +370,7 @@ test "warnings endpoint returns the active set as JSON" {
 }
 
 test "warnings endpoint filters by TERYT and reports an empty result" {
-    var store = try weather.Store.initMemory();
+    var store = try weather.Store.initMemory(std.testing.allocator);
     defer store.deinit();
     _ = try store.recordWarnings(&.{warningFixture()}, "2026-09-16 23:05:00");
 
@@ -388,7 +389,7 @@ test "warnings endpoint filters by TERYT and reports an empty result" {
 }
 
 test "warnings endpoint rejects malformed query values" {
-    var store = try weather.Store.initMemory();
+    var store = try weather.Store.initMemory(std.testing.allocator);
     defer store.deinit();
     var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store, .io = std.testing.io };
     var request: router.RequestContext = .{
@@ -412,7 +413,7 @@ test "warnings endpoint rejects malformed query values" {
 }
 
 test "warnings revisions require a source and an identifier" {
-    var store = try weather.Store.initMemory();
+    var store = try weather.Store.initMemory(std.testing.allocator);
     defer store.deinit();
     _ = try store.recordWarnings(&.{warningFixture()}, "2026-09-16 23:05:00");
 
@@ -438,7 +439,7 @@ test "warnings revisions require a source and an identifier" {
 }
 
 test "warnings history keeps expired warnings" {
-    var store = try weather.Store.initMemory();
+    var store = try weather.Store.initMemory(std.testing.allocator);
     defer store.deinit();
     var expired = warningFixture();
     expired.warning_id = "Sk0";
