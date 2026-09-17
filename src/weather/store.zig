@@ -76,17 +76,41 @@ const warning_area_select =
 ;
 const warning_area_order = "\nORDER BY a.source ASC, a.warning_id ASC, a.revision ASC";
 
-/// The columns of `weather_observations` in table order. The insert, the
-/// history select, the placeholders and the upsert assignments are all derived
-/// from this list, so they cannot drift apart.
+/// The model columns of `weather_observations`, in table order. `history`
+/// selects exactly these, so the decoded row matches `model.Observation`: the
+/// sqlite reader assigns columns to struct fields by position.
 const observation_column_names = [_][]const u8{
     "station_id",                "station_name",     "observed_at",
     "temperature_c",             "wind_speed_m_s",   "wind_direction_deg",
     "relative_humidity_percent", "precipitation_mm", "pressure_hpa",
+    "longitude",                 "latitude",
 };
-const observation_columns = joinColumns(&observation_column_names);
-const observation_placeholders = placeholders(observation_column_names.len);
-const observation_upsert = upsertAssignments(&observation_column_names);
+
+/// The table's columns: the model's plus the product label the row arrived
+/// from. `source` trails the list because that is where `ALTER TABLE` appends
+/// it on a database written before the label existed. The insert, the
+/// placeholders and the upsert assignments derive from this list, so they
+/// cannot drift apart.
+const observation_table_column_names = blk: {
+    var names: [observation_column_names.len + 1][]const u8 = undefined;
+    for (observation_column_names, 0..) |name, index| names[index] = name;
+    names[observation_column_names.len] = "source";
+    break :blk names;
+};
+const observation_columns = joinColumns(&observation_table_column_names);
+const observation_select_columns = joinColumns(&observation_column_names);
+const observation_placeholders = placeholders(observation_table_column_names.len);
+const observation_upsert = upsertAssignments(&observation_table_column_names);
+
+/// Classifies the rows written before `weather_observations` recorded its
+/// product, which is a one-time rewrite of existing data. IMGW's synoptic
+/// network uses five-digit numeric station ids while the meteo network uses
+/// nine-digit codes, so the id names the product unambiguously. New rows always
+/// carry an explicit label, which makes the `source = ''` guard self-clearing.
+const classify_observation_sources = std.fmt.comptimePrint(
+    "UPDATE weather_observations SET source = CASE WHEN length(station_id) = 5 THEN '{s}' ELSE '{s}' END WHERE source = ''",
+    .{ model.observation_source_labels[0], model.observation_source_labels[1] },
+);
 
 /// The columns of `hydro_observations` in table order.
 const hydro_column_names = [_][]const u8{
@@ -204,7 +228,10 @@ pub const Store = struct {
         return statement.one(i64, .{}, .{source});
     }
 
-    pub fn record(self: *Store, observation: model.Observation) !void {
+    /// Writes one measurement under the product that produced it. `source` is
+    /// one of `model.observation_source_labels`; it stays a stored label rather
+    /// than a field of the observation, which remains product agnostic.
+    pub fn record(self: *Store, source: []const u8, observation: model.Observation) !void {
         try self.db.exec(
             "INSERT INTO weather_observations (" ++ observation_columns ++ ")\n" ++
                 "VALUES (" ++ observation_placeholders ++ ")\n" ++
@@ -220,13 +247,16 @@ pub const Store = struct {
                 .relative_humidity_percent = observation.relative_humidity_percent,
                 .precipitation_mm = observation.precipitation_mm,
                 .pressure_hpa = observation.pressure_hpa,
+                .longitude = observation.longitude,
+                .latitude = observation.latitude,
+                .source = source,
             },
         );
     }
 
     pub fn history(self: *Store, allocator: std.mem.Allocator, station_id: []const u8, since: []const u8) ![]model.Observation {
         var statement = try self.db.prepare(
-            "SELECT " ++ observation_columns ++ "\n" ++
+            "SELECT " ++ observation_select_columns ++ "\n" ++
                 "FROM weather_observations\n" ++
                 "WHERE station_id = ? AND observed_at >= ?\n" ++
                 "ORDER BY observed_at ASC",
@@ -235,13 +265,32 @@ pub const Store = struct {
         return statement.all(model.Observation, allocator, .{}, .{ .station_id = station_id, .since = since });
     }
 
-    pub fn stations(self: *Store, allocator: std.mem.Allocator) ![]model.Station {
-        var statement = try self.db.prepare(
-            \\SELECT station_id, station_name, MAX(observed_at)
+    /// The newest reading per station, optionally narrowed to one measurement
+    /// product. `source` is a label from `model.observation_source_labels`.
+    ///
+    /// The coordinates are aggregated rather than read from the newest row:
+    /// `MAX` skips nulls, so a station reports the position as soon as one of
+    /// its stored readings carried one, even though rows written before the
+    /// table held coordinates stay null. A station's position does not change,
+    /// so which reading carried it does not matter.
+    pub fn stations(self: *Store, allocator: std.mem.Allocator, source: ?[]const u8) ![]model.Station {
+        const select =
+            \\SELECT station_id, station_name, MAX(observed_at), MAX(longitude), MAX(latitude)
             \\FROM weather_observations
-            \\GROUP BY station_id, station_name
-            \\ORDER BY station_name COLLATE NOCASE ASC
-        );
+        ;
+        const group =
+            \\ GROUP BY station_id, station_name
+            \\ ORDER BY station_name COLLATE NOCASE ASC
+        ;
+        if (source) |label| {
+            // The select constant ends without a newline, so the clause opens with one.
+            const sql = try std.fmt.allocPrint(allocator, select ++ "\nWHERE source = ?" ++ group, .{});
+            defer allocator.free(sql);
+            var statement = try self.db.prepareDynamic(sql);
+            defer statement.deinit();
+            return statement.all(model.Station, allocator, .{}, .{label});
+        }
+        var statement = try self.db.prepare(select ++ group);
         defer statement.deinit();
         return statement.all(model.Station, allocator, .{}, .{});
     }
@@ -492,7 +541,11 @@ pub const Store = struct {
     /// Creates the schema and brings a database written by an older build up to
     /// date. The hydro table gained `normalized_at` when every timestamp it
     /// stores moved to the UTC form the other products already used, so
-    /// `user_version` tracks which rewrites have already run.
+    /// `user_version` tracks which rewrites have already run. The observation
+    /// table gained `source` later; its rewrite is guarded by the column itself
+    /// and the self-clearing `source = ''` marker. It gained the two coordinate
+    /// columns last, which need no rewrite at all: rows written before them stay
+    /// null until the next poll of a product that publishes a position.
     fn migrate(self: *Store, allocator: std.mem.Allocator) !void {
         try self.db.execMulti(
             \\CREATE TABLE IF NOT EXISTS weather_observations (
@@ -505,6 +558,9 @@ pub const Store = struct {
             \\    relative_humidity_percent REAL,
             \\    precipitation_mm REAL,
             \\    pressure_hpa REAL,
+            \\    longitude REAL,
+            \\    latitude REAL,
+            \\    source TEXT NOT NULL DEFAULT '',
             \\    PRIMARY KEY (station_id, observed_at)
             \\);
             \\CREATE INDEX IF NOT EXISTS weather_observations_station_time
@@ -548,6 +604,37 @@ pub const Store = struct {
             .{},
         );
         try self.normalizeHydroTimestamps(allocator);
+        try self.classifyObservationSources();
+        try self.addObservationCoordinates();
+    }
+
+    /// Gives a database written before the stations published their position the
+    /// two coordinate columns. Nothing is backfilled: only the meteo product
+    /// publishes a position, and its next poll writes it. The `hasColumn` guard
+    /// keeps a second run harmless without `user_version` bookkeeping.
+    fn addObservationCoordinates(self: *Store) !void {
+        inline for (.{ "longitude", "latitude" }) |column| {
+            if (!try hasColumn(&self.db, "weather_observations", column)) {
+                const sql = comptime "ALTER TABLE weather_observations ADD COLUMN " ++ column ++ " REAL";
+                try self.db.exec(sql, .{}, .{});
+            }
+        }
+    }
+
+    /// Gives a database written before `weather_observations` recorded its
+    /// product the `source` column, then labels its legacy rows once. Every new
+    /// row arrives with an explicit label, so the `source = ''` guard empties
+    /// itself and a second run is a no-op; unlike the hydro rewrite this needs
+    /// no `user_version` bookkeeping.
+    fn classifyObservationSources(self: *Store) !void {
+        if (!try hasColumn(&self.db, "weather_observations", "source")) {
+            try self.db.exec("ALTER TABLE weather_observations ADD COLUMN source TEXT NOT NULL DEFAULT ''", .{}, .{});
+        }
+        // The index is created here rather than beside the table because a
+        // database written before the label existed only gains the column just
+        // above, and an index cannot name a column the table does not have yet.
+        try self.db.exec("CREATE INDEX IF NOT EXISTS weather_observations_source ON weather_observations (source)", .{}, .{});
+        try self.db.exec(classify_observation_sources, .{}, .{});
     }
 
     /// Rewrites hydro timestamps stored before hydro adopted the UTC form. The
@@ -564,7 +651,7 @@ pub const Store = struct {
         const version = (try self.db.pragma(i64, .{}, "user_version", null)) orelse 0;
         if (version >= hydro_timestamp_version) return;
 
-        if (!try hasNormalizedMarker(&self.db)) {
+        if (!try hasColumn(&self.db, "hydro_observations", "normalized_at")) {
             try self.db.exec("ALTER TABLE hydro_observations ADD COLUMN normalized_at TEXT", .{}, .{});
         }
 
@@ -612,10 +699,15 @@ fn warningSource(value: []const u8) !WarningSource {
     return WarningSource.fromQuery(value) orelse error.InvalidData;
 }
 
-/// Reports whether a legacy hydro table already carries the marker column, so
-/// the migration does not try to add it twice.
-fn hasNormalizedMarker(db: *sqlite.Db) !bool {
-    const present = (try db.one(i64, "SELECT COUNT(*) FROM pragma_table_info('hydro_observations') WHERE name = 'normalized_at'", .{}, .{})) orelse 0;
+/// Reports whether `table` already carries `column`, so a migration does not
+/// try to add it twice. The identifiers are compile-time constants, which is
+/// what lets the pragma be built as a comptime query.
+fn hasColumn(db: *sqlite.Db, comptime table: []const u8, comptime column: []const u8) !bool {
+    const sql = comptime std.fmt.comptimePrint(
+        "SELECT COUNT(*) FROM pragma_table_info('{s}') WHERE name = '{s}'",
+        .{ table, column },
+    );
+    const present = (try db.one(i64, sql, .{}, .{})) orelse 0;
     return present > 0;
 }
 
@@ -670,7 +762,11 @@ test "column lists are derived from one source" {
     // The placeholder count has to follow the column list, or an insert binds
     // the wrong number of values.
     try std.testing.expectEqual(hydro_column_names.len, std.mem.count(u8, hydro_placeholders, "?"));
-    try std.testing.expectEqual(observation_column_names.len, std.mem.count(u8, observation_placeholders, "?"));
+    try std.testing.expectEqual(observation_table_column_names.len, std.mem.count(u8, observation_placeholders, "?"));
+    // The history select has to match `model.Observation`, so it cannot carry
+    // the stored product label the insert does.
+    try std.testing.expectEqualStrings(observation_select_columns, comptime joinColumns(&observation_column_names));
+    try std.testing.expect(std.mem.indexOf(u8, observation_columns, "source") != null);
 }
 
 fn matchesWarning(row: AreaRow, item: Warning) bool {
@@ -708,7 +804,7 @@ test "stores each station observation once and returns its history" {
     var store = try Store.initMemory(std.testing.allocator);
     defer store.deinit();
 
-    try store.record(.{
+    try store.record("synop", .{
         .station_id = "12424",
         .station_name = "Wrocław",
         .observed_at = "2026-09-16T17:00:00Z",
@@ -719,7 +815,7 @@ test "stores each station observation once and returns its history" {
         .precipitation_mm = 0,
         .pressure_hpa = 1012.4,
     });
-    try store.record(.{
+    try store.record("synop", .{
         .station_id = "12424",
         .station_name = "Wrocław",
         .observed_at = "2026-09-16T17:00:00Z",
@@ -737,6 +833,97 @@ test "stores each station observation once and returns its history" {
     try std.testing.expectEqual(@as(usize, 1), observations.len);
     try std.testing.expectEqualStrings("Wrocław", observations[0].station_name);
     try std.testing.expectApproxEqAbs(@as(f64, 18.5), observations[0].temperature_c.?, 0.001);
+    // A synoptic reading carries no position, so both fields stay null.
+    try std.testing.expect(observations[0].longitude == null);
+    try std.testing.expect(observations[0].latitude == null);
+}
+
+test "stations are listed per measurement product" {
+    var store = try Store.initMemory(std.testing.allocator);
+    defer store.deinit();
+
+    const synoptic: model.Observation = .{
+        .station_id = "12424",
+        .station_name = "Wrocław",
+        .observed_at = "2026-09-16T17:00:00Z",
+        .temperature_c = 18.5,
+        .wind_speed_m_s = null,
+        .wind_direction_deg = null,
+        .relative_humidity_percent = null,
+        .precipitation_mm = null,
+        .pressure_hpa = 1012.4,
+    };
+    var meteorological = synoptic;
+    meteorological.station_id = "249180010";
+    meteorological.station_name = "PSZCZYNA";
+    meteorological.longitude = 18.9306;
+    meteorological.latitude = 49.9342;
+
+    try store.record("synop", synoptic);
+    try store.record("meteo", meteorological);
+
+    const all = try store.stations(std.testing.allocator, null);
+    defer model.deinitStations(std.testing.allocator, all);
+    try std.testing.expectEqual(@as(usize, 2), all.len);
+
+    const synoptic_only = try store.stations(std.testing.allocator, "synop");
+    defer model.deinitStations(std.testing.allocator, synoptic_only);
+    try std.testing.expectEqual(@as(usize, 1), synoptic_only.len);
+    try std.testing.expectEqualStrings("12424", synoptic_only[0].station_id);
+    // The synoptic product publishes no position.
+    try std.testing.expect(synoptic_only[0].longitude == null);
+    try std.testing.expect(synoptic_only[0].latitude == null);
+
+    const meteo_only = try store.stations(std.testing.allocator, "meteo");
+    defer model.deinitStations(std.testing.allocator, meteo_only);
+    try std.testing.expectEqual(@as(usize, 1), meteo_only.len);
+    try std.testing.expectEqualStrings("249180010", meteo_only[0].station_id);
+    try std.testing.expectApproxEqAbs(@as(f64, 18.9306), meteo_only[0].longitude.?, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 49.9342), meteo_only[0].latitude.?, 0.0001);
+
+    const unknown = try store.stations(std.testing.allocator, "hydro");
+    defer model.deinitStations(std.testing.allocator, unknown);
+    try std.testing.expectEqual(@as(usize, 0), unknown.len);
+}
+
+test "a station reports the position any of its readings carried" {
+    var store = try Store.initMemory(std.testing.allocator);
+    defer store.deinit();
+
+    // A reading written before the table held coordinates, and a newer one that
+    // carries them: the listing has to report the station's position, not the
+    // null of its newest row.
+    try store.record("meteo", .{
+        .station_id = "249180010",
+        .station_name = "PSZCZYNA",
+        .observed_at = "2026-09-16T17:00:00Z",
+        .temperature_c = 17.5,
+        .wind_speed_m_s = null,
+        .wind_direction_deg = null,
+        .relative_humidity_percent = null,
+        .precipitation_mm = null,
+        .pressure_hpa = null,
+    });
+    try store.record("meteo", .{
+        .station_id = "249180010",
+        .station_name = "PSZCZYNA",
+        .observed_at = "2026-09-16T17:10:00Z",
+        .temperature_c = 17.8,
+        .wind_speed_m_s = null,
+        .wind_direction_deg = null,
+        .relative_humidity_percent = null,
+        .precipitation_mm = null,
+        .pressure_hpa = null,
+        .longitude = 18.9306,
+        .latitude = 49.9342,
+    });
+
+    const stations = try store.stations(std.testing.allocator, "meteo");
+    defer model.deinitStations(std.testing.allocator, stations);
+    try std.testing.expectEqual(@as(usize, 1), stations.len);
+    try std.testing.expectEqualStrings("2026-09-16T17:10:00Z", stations[0].last_observed_at);
+    try std.testing.expectApproxEqAbs(@as(f64, 18.9306), stations[0].longitude.?, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 49.9342), stations[0].latitude.?, 0.0001);
 }
 
 test "a source is fresh only until its recorded poll ages out" {
@@ -1016,4 +1203,48 @@ test "a legacy hydro timestamp is rewritten from Warsaw wall clock to UTC" {
     const unchanged = (try again.oneAlloc([]const u8, std.testing.allocator, .{}, .{})).?;
     defer std.testing.allocator.free(unchanged);
     try std.testing.expectEqualStrings("2026-09-16T05:50:00Z", unchanged);
+}
+
+test "a legacy observation row is labelled with its measurement product" {
+    var path_buffer: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buffer, "/tmp/szklana-pogoda-source-{d}.db", .{std.os.linux.getpid()});
+    const cwd = std.Io.Dir.cwd();
+    cwd.deleteFile(std.testing.io, path) catch {};
+    defer cwd.deleteFile(std.testing.io, path) catch {};
+    // A database as the previous build left it: the observation table without
+    // the product label and without the coordinate columns, holding one
+    // synoptic (five-digit) and one meteo (nine-digit) station.
+    {
+        var legacy = try sqlite.Db.init(.{
+            .mode = .{ .File = path },
+            .open_flags = .{ .write = true, .create = true },
+            .threading_mode = .Serialized,
+        });
+        defer legacy.deinit();
+        try legacy.exec("CREATE TABLE weather_observations (station_id TEXT NOT NULL, station_name TEXT NOT NULL, observed_at TEXT NOT NULL, temperature_c REAL, wind_speed_m_s REAL, wind_direction_deg INTEGER, relative_humidity_percent REAL, precipitation_mm REAL, pressure_hpa REAL, PRIMARY KEY (station_id, observed_at))", .{}, .{});
+        try legacy.exec("INSERT INTO weather_observations VALUES ('12424', 'Wrocław', '2026-09-16T17:00:00Z', 18.5, NULL, NULL, NULL, NULL, 1012.4)", .{}, .{});
+        try legacy.exec("INSERT INTO weather_observations VALUES ('249180010', 'PSZCZYNA', '2026-09-16T17:10:00Z', 17.5, NULL, NULL, NULL, NULL, NULL)", .{}, .{});
+    }
+
+    var store = try Store.initFile(std.testing.allocator, path, .fixed());
+    defer store.deinit();
+
+    const synoptic = try store.stations(std.testing.allocator, "synop");
+    defer model.deinitStations(std.testing.allocator, synoptic);
+    try std.testing.expectEqual(@as(usize, 1), synoptic.len);
+    try std.testing.expectEqualStrings("12424", synoptic[0].station_id);
+
+    const meteo = try store.stations(std.testing.allocator, "meteo");
+    defer model.deinitStations(std.testing.allocator, meteo);
+    try std.testing.expectEqual(@as(usize, 1), meteo.len);
+    try std.testing.expectEqualStrings("249180010", meteo[0].station_id);
+    // The coordinate columns arrived empty: only a new poll can fill them.
+    try std.testing.expect(meteo[0].longitude == null);
+    try std.testing.expect(meteo[0].latitude == null);
+
+    // The `source = ''` guard clears itself, so a second run keeps the labels.
+    try store.migrate(std.testing.allocator);
+    const again = try store.stations(std.testing.allocator, "synop");
+    defer model.deinitStations(std.testing.allocator, again);
+    try std.testing.expectEqual(@as(usize, 1), again.len);
 }

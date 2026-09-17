@@ -18,17 +18,19 @@ pub fn memory(_: *router.App, request: *router.RequestContext) router.AppError!r
 }
 
 /// The stations endpoints answer with the newest reading per station; only the
-/// store query, the model type and the released fields differ.
+/// store query, the optional product filter and the released fields differ.
 fn stationsRoute(
     comptime T: type,
     comptime list: anytype,
     comptime deinit_items: fn (std.mem.Allocator, []T) void,
+    comptime filter: fn (*router.RequestContext) router.AppError!?[]const u8,
     comptime what: []const u8,
 ) router.Handler {
     return struct {
         fn handle(app: *router.App, request: *router.RequestContext) router.AppError!router.Response {
             const store = app.weather_store orelse return error.WeatherStoreUnavailable;
-            const stations = list(store, request.allocator) catch |err| {
+            const source = try filter(request);
+            const stations = list(store, request.allocator, source) catch |err| {
                 std.log.err("{s} unavailable: {t}", .{ what, err });
                 return error.WeatherStoreUnavailable;
             };
@@ -36,6 +38,22 @@ fn stationsRoute(
             return router.Response.jsonValue(request.allocator, .ok, .{ .stations = stations });
         }
     }.handle;
+}
+
+/// The weather table holds both measurement products, so its stations endpoint
+/// accepts an optional `?source=`; hydro has a single product and no filter.
+fn observationSource(request: *router.RequestContext) router.AppError!?[]const u8 {
+    const value = request.param("source") orelse return null;
+    if (!weather.model.isObservationSource(value)) return error.BadRequest;
+    return value;
+}
+
+fn noSource(_: *router.RequestContext) router.AppError!?[]const u8 {
+    return null;
+}
+
+fn hydroStationsAll(store: *weather.Store, allocator: std.mem.Allocator, _: ?[]const u8) ![]weather.HydroStation {
+    return store.hydroStations(allocator);
 }
 
 /// The history endpoints take a station id and an optional lower bound; only the
@@ -67,8 +85,8 @@ fn historyRoute(
 }
 
 pub const weatherHistory = historyRoute(weather.Observation, weather.Store.history, weather.model.deinitObservations, "weather history");
-pub const weatherStations = stationsRoute(weather.Station, weather.Store.stations, weather.model.deinitStations, "weather stations");
-pub const hydroStations = stationsRoute(weather.HydroStation, weather.Store.hydroStations, weather.model.deinitHydro, "hydro stations");
+pub const weatherStations = stationsRoute(weather.Station, weather.Store.stations, weather.model.deinitStations, observationSource, "weather stations");
+pub const hydroStations = stationsRoute(weather.HydroStation, hydroStationsAll, weather.model.deinitHydro, noSource, "hydro stations");
 pub const hydroHistory = historyRoute(weather.HydroObservation, weather.Store.hydroHistory, weather.model.deinitHydro, "hydro history");
 
 const WarningQuery = struct {
@@ -231,7 +249,7 @@ test "memory endpoint only allows GET" {
 test "weather history returns observations for one station" {
     var store = try weather.Store.initMemory(std.testing.allocator);
     defer store.deinit();
-    try store.record(.{
+    try store.record("synop", .{
         .station_id = "12424",
         .station_name = "Wrocław",
         .observed_at = "2026-09-16T17:00:00Z",
@@ -256,7 +274,7 @@ test "weather history returns observations for one station" {
     defer std.testing.allocator.free(response.body);
     try std.testing.expectEqual(.ok, response.status);
     try std.testing.expectEqualStrings(
-        "{\"station_id\":\"12424\",\"observations\":[{\"station_id\":\"12424\",\"station_name\":\"Wrocław\",\"observed_at\":\"2026-09-16T17:00:00Z\",\"temperature_c\":18.5,\"wind_speed_m_s\":null,\"wind_direction_deg\":null,\"relative_humidity_percent\":71.5,\"precipitation_mm\":0,\"pressure_hpa\":1012.4}]}",
+        "{\"station_id\":\"12424\",\"observations\":[{\"station_id\":\"12424\",\"station_name\":\"Wrocław\",\"observed_at\":\"2026-09-16T17:00:00Z\",\"temperature_c\":18.5,\"wind_speed_m_s\":null,\"wind_direction_deg\":null,\"relative_humidity_percent\":71.5,\"precipitation_mm\":0,\"pressure_hpa\":1012.4,\"longitude\":null,\"latitude\":null}]}",
         response.body,
     );
 }
@@ -297,7 +315,7 @@ test "hydro history requires a station ID" {
 test "weather stations returns city to station mapping" {
     var store = try weather.Store.initMemory(std.testing.allocator);
     defer store.deinit();
-    try store.record(.{
+    try store.record("synop", .{
         .station_id = "12424",
         .station_name = "Wrocław",
         .observed_at = "2026-09-16T17:00:00Z",
@@ -320,7 +338,118 @@ test "weather stations returns city to station mapping" {
     const response = try weatherStations(&app, &request);
     defer std.testing.allocator.free(response.body);
     try std.testing.expectEqualStrings(
-        "{\"stations\":[{\"station_id\":\"12424\",\"station_name\":\"Wrocław\",\"last_observed_at\":\"2026-09-16T17:00:00Z\"}]}",
+        "{\"stations\":[{\"station_id\":\"12424\",\"station_name\":\"Wrocław\",\"last_observed_at\":\"2026-09-16T17:00:00Z\",\"longitude\":null,\"latitude\":null}]}",
+        response.body,
+    );
+}
+
+test "weather stations filter by measurement product" {
+    var store = try weather.Store.initMemory(std.testing.allocator);
+    defer store.deinit();
+    try store.record("synop", .{
+        .station_id = "12424",
+        .station_name = "Wrocław",
+        .observed_at = "2026-09-16T17:00:00Z",
+        .temperature_c = null,
+        .wind_speed_m_s = null,
+        .wind_direction_deg = null,
+        .relative_humidity_percent = null,
+        .precipitation_mm = null,
+        .pressure_hpa = null,
+    });
+    try store.record("meteo", .{
+        .station_id = "249180010",
+        .station_name = "PSZCZYNA",
+        .observed_at = "2026-09-16T17:10:00Z",
+        .temperature_c = null,
+        .wind_speed_m_s = null,
+        .wind_direction_deg = null,
+        .relative_humidity_percent = null,
+        .precipitation_mm = null,
+        .pressure_hpa = null,
+    });
+    var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store };
+    var request: router.RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .GET,
+        .path = "/api/weather/stations",
+        .query = "source=synop",
+        .headers = &.{},
+        .body = null,
+    };
+
+    const synoptic = try weatherStations(&app, &request);
+    defer std.testing.allocator.free(synoptic.body);
+    try std.testing.expectEqualStrings(
+        "{\"stations\":[{\"station_id\":\"12424\",\"station_name\":\"Wrocław\",\"last_observed_at\":\"2026-09-16T17:00:00Z\",\"longitude\":null,\"latitude\":null}]}",
+        synoptic.body,
+    );
+
+    request.query = "source=meteo";
+    const meteo = try weatherStations(&app, &request);
+    defer std.testing.allocator.free(meteo.body);
+    try std.testing.expectEqualStrings(
+        "{\"stations\":[{\"station_id\":\"249180010\",\"station_name\":\"PSZCZYNA\",\"last_observed_at\":\"2026-09-16T17:10:00Z\",\"longitude\":null,\"latitude\":null}]}",
+        meteo.body,
+    );
+}
+
+test "weather stations reject an unknown measurement product" {
+    var store = try weather.Store.initMemory(std.testing.allocator);
+    defer store.deinit();
+    var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store };
+    var request: router.RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .GET,
+        .path = "/api/weather/stations",
+        .query = "source=hydro",
+        .headers = &.{},
+        .body = null,
+    };
+    try std.testing.expectError(error.BadRequest, weatherStations(&app, &request));
+
+    request.query = "source=";
+    try std.testing.expectError(error.BadRequest, weatherStations(&app, &request));
+
+    // Hydro ignores the parameter's meaning but still has to answer.
+    request.path = "/api/hydro/stations";
+    request.query = null;
+    const response = try hydroStations(&app, &request);
+    defer std.testing.allocator.free(response.body);
+    try std.testing.expectEqual(.ok, response.status);
+}
+
+test "weather stations report the position the meteo product publishes" {
+    var store = try weather.Store.initMemory(std.testing.allocator);
+    defer store.deinit();
+    try store.record("meteo", .{
+        .station_id = "249180010",
+        .station_name = "PSZCZYNA",
+        .observed_at = "2026-09-16T17:10:00Z",
+        .temperature_c = 17.5,
+        .wind_speed_m_s = null,
+        .wind_direction_deg = null,
+        .relative_humidity_percent = null,
+        .precipitation_mm = null,
+        .pressure_hpa = null,
+        .longitude = 18.9306,
+        .latitude = 49.9342,
+    });
+    var app: router.App = .{ .max_body_bytes = 16, .weather_store = &store };
+    var request: router.RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .GET,
+        .path = "/api/weather/stations",
+        .query = "source=meteo",
+        .headers = &.{},
+        .body = null,
+    };
+
+    const response = try weatherStations(&app, &request);
+    defer std.testing.allocator.free(response.body);
+    try std.testing.expectEqual(.ok, response.status);
+    try std.testing.expectEqualStrings(
+        "{\"stations\":[{\"station_id\":\"249180010\",\"station_name\":\"PSZCZYNA\",\"last_observed_at\":\"2026-09-16T17:10:00Z\",\"longitude\":18.9306,\"latitude\":49.9342}]}",
         response.body,
     );
 }

@@ -63,7 +63,7 @@ All timestamps are stored in the UTC-suffixed form `YYYY-MM-DDTHH:MM:SSZ`.
 
 | Route | Description |
 | --- | --- |
-| `GET /api/weather/stations` | stations with their newest reading time |
+| `GET /api/weather/stations?source=` | stations with their newest reading time |
 | `GET /api/weather/history?station_id=&since=` | observations of one station |
 | `GET /api/hydro/stations` | gauges with their newest reading |
 | `GET /api/hydro/history?station_id=&since=` | readings of one gauge |
@@ -72,6 +72,15 @@ All timestamps are stored in the UTC-suffixed form `YYYY-MM-DDTHH:MM:SSZ`.
 | `GET /api/warnings/revisions?source=&id=` | revisions of one warning |
 | `GET /api/memory` | process memory |
 | `GET /metrics` | Prometheus metrics (second listener) |
+
+The weather stations route keeps synoptic and meteorological readings in one
+table, so its `source` (`synop` or `meteo`) narrows the listing to a single
+measurement product; omitted, it lists both.
+
+The station listings report the position each product publishes as `longitude`
+and `latitude`. IMGW's meteo and hydro products publish one, the synoptic
+product does not, so a synoptic station reports `null` for both; the browser
+uses them for the dialog's "show nearest" filter.
 
 The warning routes all accept `source` (`meteo` or `hydro`) and `teryt` (a
 four-digit county code); `since` is an IMGW-style `YYYY-MM-DD HH:MM:SS`

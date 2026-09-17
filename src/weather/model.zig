@@ -6,8 +6,23 @@
 
 const std = @import("std");
 
+/// The measurement products that share the observation table, named exactly as
+/// the `source_state` labels, the stored `source` column and the API's
+/// `?source=` filter spell them. Both are measurement products, so they stay
+/// out of the domain types and are only a label on the stored row.
+pub const observation_source_labels = [_][]const u8{ "synop", "meteo" };
+
+pub fn isObservationSource(value: []const u8) bool {
+    for (observation_source_labels) |label| {
+        if (std.mem.eql(u8, label, value)) return true;
+    }
+    return false;
+}
+
 /// One measurement of a station at a point in time. `observed_at` is the
 /// ISO-like UTC form the store keeps, for example `"2026-09-17T07:00:00Z"`.
+/// The coordinates are the station's position as the product published it;
+/// products that publish none leave both null.
 pub const Observation = struct {
     station_id: []const u8,
     station_name: []const u8,
@@ -18,14 +33,18 @@ pub const Observation = struct {
     relative_humidity_percent: ?f64,
     precipitation_mm: ?f64,
     pressure_hpa: ?f64,
+    longitude: ?f64 = null,
+    latitude: ?f64 = null,
 };
 
 /// A station with its newest observation time, as the stations listing reports
-/// it.
+/// it. The coordinates are null for a product that publishes none.
 pub const Station = struct {
     station_id: []const u8,
     station_name: []const u8,
     last_observed_at: []const u8,
+    longitude: ?f64 = null,
+    latitude: ?f64 = null,
 };
 
 /// A river gauge with its newest measurement, the station's alarm thresholds

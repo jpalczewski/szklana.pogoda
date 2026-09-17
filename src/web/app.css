@@ -41,7 +41,8 @@ body {
   text-align: right;
 }
 
-.about-panel {
+.about-panel,
+.imgw-panel {
   margin-top: 1rem;
 }
 
@@ -61,15 +62,109 @@ body {
   width: min(360px, 100%);
 }
 
+.imgw-window {
+  width: min(560px, 100%);
+}
+
 /* The dialog is moved by dragging its title bar, so the browser must keep its
  * hands off text selection and touch scrolling there. */
-.about-window .title-bar {
+.about-window .title-bar,
+.imgw-window .title-bar {
   touch-action: none;
   user-select: none;
 }
 
 .about-actions {
   justify-content: flex-end;
+}
+
+/* 98.css tucks the panel flush under the tab strip, so the window body carries
+ * no extra gap of its own. */
+.imgw-tab-body {
+  margin: 0;
+  padding: 0.75rem;
+}
+
+.imgw-search {
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.imgw-clear {
+  flex: none;
+  line-height: 1;
+  min-width: 21px;
+  padding: 1px 0 0;
+}
+
+.imgw-search-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The nearest-stations control shares the search row's geometry, and its hints
+ * sit on the same line as the button. */
+.imgw-nearby {
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.imgw-nearby button {
+  flex: none;
+}
+
+.imgw-nearby-hint {
+  min-width: 0;
+}
+
+.imgw-status,
+.imgw-count {
+  margin: 0.5rem 0 0;
+}
+
+.imgw-nearby .imgw-status {
+  margin: 0;
+}
+
+.imgw-list-label {
+  display: block;
+  margin: 0.75rem 0 0.25rem;
+}
+
+.imgw-list {
+  background-image: none;
+  height: 14rem;
+  padding-right: 4px;
+  width: 100%;
+}
+
+.imgw-details {
+  border-top: 1px solid #808080;
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.imgw-details-title {
+  font-size: 1rem;
+  margin: 0 0 0.25rem;
+}
+
+.imgw-detail-list {
+  display: grid;
+  gap: 0.25rem 1rem;
+  grid-template-columns: 1fr auto;
+  margin: 0;
+  max-height: 12rem;
+  overflow: auto;
+}
+
+.imgw-detail-list dt,
+.imgw-detail-list dd {
+  margin: 0;
+}
+
+.imgw-detail-list dd {
+  text-align: right;
 }
 
 /*

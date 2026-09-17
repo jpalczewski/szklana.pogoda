@@ -12,6 +12,9 @@
   data-http-error="{{http_error}}"
   data-connection-error="{{connection_error}}"
   data-memory-unavailable="{{memory_unavailable}}"
+  data-imgw-unavailable="{{imgw_unavailable}}"
+  data-location-denied="{{location_denied}}"
+  data-location-unavailable="{{location_unavailable}}"
 >
   <div class="window app-window">
     <div class="title-bar">
@@ -33,6 +36,226 @@
         </dl>
         <button type="button" @click="load" :disabled="loading">{{memory_refresh}}</button>
       </fieldset>
+      <div class="imgw-panel" x-data="imgw" @keydown.escape.window="hide">
+        <button
+          type="button"
+          x-ref="launcher"
+          aria-haspopup="dialog"
+          :aria-expanded="open ? 'true' : 'false'"
+          @click="show"
+        >{{imgw_button}}</button>
+        <div
+          class="modal-backdrop"
+          x-show="open"
+          x-cloak
+          @pointerdown.self="press_backdrop"
+          @pointerup.self="release_backdrop"
+          @pointerup.window="pressed_backdrop = false"
+        >
+          <div
+            class="window imgw-window"
+            x-ref="dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="imgw-title"
+            :style="`transform: translate(${offset.x}px, ${offset.y}px)`"
+            @pointerdown="pressed_backdrop = false"
+          >
+            <div
+              class="title-bar"
+              @pointerdown="start_drag"
+              @pointermove="move_drag"
+              @pointerup="end_drag"
+              @pointercancel="end_drag"
+            >
+              <div class="title-bar-text" id="imgw-title">{{imgw_title}}</div>
+              <div class="title-bar-controls">
+                <button type="button" class="close" x-ref="closeButton" aria-label="{{close}}" @click="hide"></button>
+              </div>
+            </div>
+            <div class="window-body">
+              <menu role="tablist" aria-label="{{imgw_title}}">
+                <li
+                  role="tab"
+                  id="imgw-tab-synop"
+                  data-tab="synop"
+                  :aria-selected="tab === 'synop' ? 'true' : 'false'"
+                  :tabindex="tab === 'synop' ? 0 : -1"
+                  @click="select('synop')"
+                  @keydown.left.prevent="step(-1)"
+                  @keydown.right.prevent="step(1)"
+                ><a href="#imgw-panel" @click.prevent>{{imgw_tab_synop}}</a></li>
+                <li
+                  role="tab"
+                  id="imgw-tab-hydro"
+                  data-tab="hydro"
+                  :aria-selected="tab === 'hydro' ? 'true' : 'false'"
+                  :tabindex="tab === 'hydro' ? 0 : -1"
+                  @click="select('hydro')"
+                  @keydown.left.prevent="step(-1)"
+                  @keydown.right.prevent="step(1)"
+                ><a href="#imgw-panel" @click.prevent>{{imgw_tab_hydro}}</a></li>
+                <li
+                  role="tab"
+                  id="imgw-tab-meteo"
+                  data-tab="meteo"
+                  :aria-selected="tab === 'meteo' ? 'true' : 'false'"
+                  :tabindex="tab === 'meteo' ? 0 : -1"
+                  @click="select('meteo')"
+                  @keydown.left.prevent="step(-1)"
+                  @keydown.right.prevent="step(1)"
+                ><a href="#imgw-panel" @click.prevent>{{imgw_tab_meteo}}</a></li>
+              </menu>
+              <section
+                class="window imgw-tab-body"
+                id="imgw-panel"
+                role="tabpanel"
+                :aria-labelledby="`imgw-tab-${tab}`"
+              >
+                <div class="field-row imgw-search">
+                  <label :for="`imgw-search-${tab}`">{{imgw_search}}</label>
+                  <input
+                    type="search"
+                    class="imgw-search-input"
+                    :id="`imgw-search-${tab}`"
+                    x-ref="search"
+                    x-model="query[tab]"
+                    placeholder="{{imgw_search_placeholder}}"
+                  />
+                  <button
+                    type="button"
+                    class="imgw-clear"
+                    :disabled="query[tab].length === 0"
+                    aria-label="{{imgw_clear}}"
+                    title="{{imgw_clear}}"
+                    @click="clear_search"
+                  >×</button>
+                </div>
+                <div class="field-row imgw-nearby">
+                  <button
+                    type="button"
+                    x-show="nearby_supported"
+                    x-cloak
+                    :aria-pressed="nearby ? 'true' : 'false'"
+                    :disabled="locating"
+                    @click="toggle_nearby"
+                  >
+                    <span x-show="!nearby">{{imgw_nearby}}</span>
+                    <span x-show="nearby" x-cloak>{{imgw_nearby_off}}</span>
+                  </button>
+                  <span
+                    class="imgw-nearby-hint"
+                    x-show="active.items && !nearby_supported"
+                    x-cloak
+                  >{{imgw_nearby_unsupported}}</span>
+                  <span class="imgw-status" x-show="locating" x-cloak>{{imgw_locating}}</span>
+                  <span
+                    class="imgw-status"
+                    x-show="location_error"
+                    x-cloak
+                    x-text="location_error"
+                  ></span>
+                </div>
+                <p class="imgw-status" x-show="active.loading" x-cloak>{{loading}}</p>
+                <p class="imgw-status" x-show="active.error" x-cloak x-text="active.error"></p>
+                <p class="imgw-count" x-show="!active.loading && !active.error" x-cloak>
+                  {{imgw_count}} <span x-text="filtered.length"></span>
+                </p>
+                <label class="imgw-list-label" :for="`imgw-list-${tab}`">
+                  <span x-show="!nearby || !nearby_supported">{{imgw_list}}</span>
+                  <span x-show="nearby && nearby_supported" x-cloak>{{imgw_nearby_list}}</span>
+                </label>
+                <select class="imgw-list" :id="`imgw-list-${tab}`" multiple size="12" @change="pick">
+                  <template x-for="station in filtered" :key="station.station_id">
+                    <option :value="station.station_id" x-text="describe(station)"></option>
+                  </template>
+                </select>
+                <p
+                  class="imgw-status"
+                  x-show="!active.loading && !active.error && filtered.length === 0"
+                  x-cloak
+                >{{imgw_empty}}</p>
+                <p class="imgw-status" x-show="!active.selected && !active.loading" x-cloak>{{imgw_no_selection}}</p>
+                <div class="imgw-details" x-show="active.selected" x-cloak>
+                  <h3 class="imgw-details-title">{{imgw_details}}</h3>
+                  <p class="imgw-status" x-show="active.detail_loading" x-cloak>{{loading}}</p>
+                  <p class="imgw-status" x-show="active.detail_error" x-cloak x-text="active.detail_error"></p>
+                  <dl
+                    class="imgw-detail-list"
+                    x-show="active.kind === 'weather' && active.detail"
+                    x-cloak
+                  >
+                    <dt>{{imgw_station_id}}</dt>
+                    <dd x-text="format_value(active.detail?.station_id)"></dd>
+                    <dt>{{imgw_station_name}}</dt>
+                    <dd x-text="format_value(active.detail?.station_name)"></dd>
+                    <dt>{{imgw_observed_at}}</dt>
+                    <dd x-text="format_value(active.detail?.observed_at)"></dd>
+                    <dt>{{imgw_temperature}}</dt>
+                    <dd x-text="format_value(active.detail?.temperature_c, '°C')"></dd>
+                    <dt>{{imgw_wind_speed}}</dt>
+                    <dd x-text="format_value(active.detail?.wind_speed_m_s, 'm/s')"></dd>
+                    <dt>{{imgw_wind_direction}}</dt>
+                    <dd x-text="format_value(active.detail?.wind_direction_deg, '°')"></dd>
+                    <dt>{{imgw_humidity}}</dt>
+                    <dd x-text="format_value(active.detail?.relative_humidity_percent, '%')"></dd>
+                    <dt>{{imgw_precipitation}}</dt>
+                    <dd x-text="format_value(active.detail?.precipitation_mm, 'mm')"></dd>
+                    <dt>{{imgw_pressure}}</dt>
+                    <dd x-text="format_value(active.detail?.pressure_hpa, 'hPa')"></dd>
+                    <template x-if="active.detail?.latitude != null">
+                      <dt>{{imgw_coordinates}}</dt>
+                    </template>
+                    <template x-if="active.detail?.latitude != null">
+                      <dd x-text="coordinates(active.detail)"></dd>
+                    </template>
+                  </dl>
+                  <dl
+                    class="imgw-detail-list"
+                    x-show="active.kind === 'hydro' && active.detail"
+                    x-cloak
+                  >
+                    <dt>{{imgw_station_id}}</dt>
+                    <dd x-text="format_value(active.detail?.station_id)"></dd>
+                    <dt>{{imgw_station_name}}</dt>
+                    <dd x-text="format_value(active.detail?.station_name)"></dd>
+                    <dt>{{imgw_river}}</dt>
+                    <dd x-text="format_value(active.detail?.river)"></dd>
+                    <dt>{{imgw_voivodeship}}</dt>
+                    <dd x-text="format_value(active.detail?.voivodeship)"></dd>
+                    <dt>{{imgw_water_level}}</dt>
+                    <dd x-text="format_value(active.detail?.water_level_cm, 'cm')"></dd>
+                    <dt>{{imgw_water_level_status}}</dt>
+                    <dd x-text="format_value(active.detail?.water_level_status)"></dd>
+                    <dt>{{imgw_water_level_at}}</dt>
+                    <dd x-text="format_value(active.detail?.water_level_observed_at)"></dd>
+                    <dt>{{imgw_water_temperature}}</dt>
+                    <dd x-text="format_value(active.detail?.water_temperature_c, '°C')"></dd>
+                    <dt>{{imgw_flow}}</dt>
+                    <dd x-text="format_value(active.detail?.flow_m3_s, 'm³/s')"></dd>
+                    <dt>{{imgw_warning_level}}</dt>
+                    <dd x-text="format_value(active.detail?.warning_level_cm, 'cm')"></dd>
+                    <dt>{{imgw_alarm_level}}</dt>
+                    <dd x-text="format_value(active.detail?.alarm_level_cm, 'cm')"></dd>
+                    <dt>{{imgw_gauge_zero}}</dt>
+                    <dd x-text="format_value(active.detail?.gauge_zero_m, 'm')"></dd>
+                    <dt>{{imgw_river_km}}</dt>
+                    <dd x-text="format_value(active.detail?.river_km, 'km')"></dd>
+                    <dt>{{imgw_coordinates}}</dt>
+                    <dd x-text="coordinates(active.detail)"></dd>
+                    <dt>{{imgw_founded_year}}</dt>
+                    <dd x-text="format_value(active.detail?.founded_year)"></dd>
+                    <dt>{{imgw_ice_phenomenon}}</dt>
+                    <dd x-text="format_value(active.detail?.ice_phenomenon)"></dd>
+                    <dt>{{imgw_overgrowth_phenomenon}}</dt>
+                    <dd x-text="format_value(active.detail?.overgrowth_phenomenon)"></dd>
+                  </dl>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="about-panel" x-data="about" @keydown.escape.window="hide">
         <button
           type="button"

@@ -171,11 +171,12 @@ fn poll(
 }
 
 /// A failing row is logged and skipped so a single bad station does not discard
-/// the rest of the batch.
+/// the rest of the batch. The source label is the product the poll belongs to,
+/// which is what lets the store list synoptic and meteorological stations apart.
 fn recordObservations(items: []const model.Observation, context: Context) anyerror!usize {
     var saved: usize = 0;
     for (items) |item| {
-        context.store.record(item) catch |err| {
+        context.store.record(context.label, item) catch |err| {
             std.log.err("saving IMGW {s} observation for {s} failed: {t}", .{ context.label, item.station_id, err });
             continue;
         };
@@ -340,4 +341,13 @@ test "a source is polled again in the next cycle" {
     poll(model.Observation, test_source, &fetch.call, allocator, std.testing.io, stale);
     try std.testing.expectEqual(@as(usize, 2), fetch.calls.calls);
     try std.testing.expect(try store.isFresh(test_source.label, stale.now_seconds, test_source.max_age_seconds));
+}
+
+test "measurement source labels are known products" {
+    // The label is written to every observation row and accepted as the
+    // stations endpoints' `?source=` filter, so the polling table and the API
+    // have to name the products the same way.
+    for (measurement_sources) |source| {
+        try std.testing.expect(model.isObservationSource(source.label));
+    }
 }

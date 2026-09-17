@@ -14,6 +14,8 @@ pub const endpoint = "https://danepubliczne.imgw.pl/api/data/meteo/";
 const Raw = struct {
     kod_stacji: []const u8, // station code
     nazwa_stacji: []const u8, // station name
+    lon: ?[]const u8 = null, // station longitude (degrees)
+    lat: ?[]const u8 = null, // station latitude (degrees)
     temperatura_powietrza: ?[]const u8 = null, // air temperature (deg C)
     temperatura_powietrza_data: ?[]const u8 = null, // air temperature timestamp
     wiatr_kierunek: ?[]const u8 = null, // wind direction (degrees)
@@ -36,6 +38,8 @@ fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.Observation {
     const source_time = raw.temperatura_powietrza_data orelse raw.wilgotnosc_wzgledna_data orelse raw.opad_10min_data orelse return error.InvalidData;
     const observed_at = try value.utcTimestamp(allocator, source_time);
     // The meteo product publishes no pressure.
+    // The meteo product is the one measurement product that publishes the
+    // station's position; synop leaves both fields null.
     return fields.decode(allocator, .{
         .station_id = raw.kod_stacji,
         .station_name = raw.nazwa_stacji,
@@ -44,12 +48,14 @@ fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.Observation {
         .wind_direction = raw.wiatr_kierunek,
         .humidity = raw.wilgotnosc_wzgledna,
         .precipitation = raw.opad_10min,
+        .longitude = raw.lon,
+        .latitude = raw.lat,
     }, observed_at);
 }
 
 test "parses meteo records using the first available timestamp" {
     const body =
-        \\[{"kod_stacji":"12424","nazwa_stacji":"Wrocław","temperatura_powietrza":"18.5","temperatura_powietrza_data":"2026-09-16 07:00:00","wiatr_kierunek":"220","wiatr_srednia_predkosc":"3.5","wilgotnosc_wzgledna":"71.5","wilgotnosc_wzgledna_data":"2026-09-16 07:00:00","opad_10min":"0","opad_10min_data":"2026-09-16 07:00:00"}]
+        \\[{"kod_stacji":"12424","nazwa_stacji":"Wrocław","lon":"16.8858","lat":"51.1026","temperatura_powietrza":"18.5","temperatura_powietrza_data":"2026-09-16 07:00:00","wiatr_kierunek":"220","wiatr_srednia_predkosc":"3.5","wilgotnosc_wzgledna":"71.5","wilgotnosc_wzgledna_data":"2026-09-16 07:00:00","opad_10min":"0","opad_10min_data":"2026-09-16 07:00:00"}]
     ;
     const observations = try parse(std.testing.allocator, body);
     defer model.deinitObservations(std.testing.allocator, observations);
@@ -58,6 +64,20 @@ test "parses meteo records using the first available timestamp" {
     try std.testing.expectEqualStrings("2026-09-16T07:00:00Z", observations[0].observed_at);
     try std.testing.expectApproxEqAbs(@as(f64, 18.5), observations[0].temperature_c.?, 0.001);
     try std.testing.expectEqual(@as(?i16, 220), observations[0].wind_direction_deg);
+    try std.testing.expectApproxEqAbs(@as(f64, 16.8858), observations[0].longitude.?, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 51.1026), observations[0].latitude.?, 0.0001);
+}
+
+test "a meteo record without a position leaves the coordinates null" {
+    const body =
+        \\[{"kod_stacji":"1","nazwa_stacji":"Bez pozycji","temperatura_powietrza":"18.5","temperatura_powietrza_data":"2026-09-16 07:00:00"}]
+    ;
+    const observations = try parse(std.testing.allocator, body);
+    defer model.deinitObservations(std.testing.allocator, observations);
+
+    try std.testing.expectEqual(@as(usize, 1), observations.len);
+    try std.testing.expect(observations[0].longitude == null);
+    try std.testing.expect(observations[0].latitude == null);
 }
 
 test "skips a meteo record without any timestamp" {
