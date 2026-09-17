@@ -30,10 +30,18 @@ install `tzdata` in the image when the exact handling of that hour matters.
 ```sh
 zig build                # executable into zig-out/bin/
 zig build run            # start the server on 0.0.0.0:8080
+zig build run-release    # the same, built with the release profile a deployment uses
 zig build test           # unit tests
 zig build cities         # regenerate src/antistorm/cities.json (needs the network)
 zig fmt src              # format
 ```
+
+`zig build` builds a debug executable, which is what development wants: it
+keeps `DebugAllocator`'s leak checking, at the price of a much larger image.
+Deployments build `zig build -Doptimize=ReleaseSafe` (or inspect the deployed
+behaviour locally with `zig build run-release`), because a debug executable keeps
+several megabytes of its own code and data resident, and `/api/memory` reports
+that as if the server held it.
 
 Environment variables:
 
@@ -77,6 +85,20 @@ All timestamps are stored in the UTC-suffixed form `YYYY-MM-DDTHH:MM:SSZ`.
 | `GET /api/storm/city?city=` or `?id=` | one city's newest reading |
 | `GET /api/memory` | process memory |
 | `GET /metrics` | Prometheus metrics (second listener) |
+
+`/api/memory` answers `own_bytes` (the memory the process owns: private
+anonymous pages on Linux, the physical footprint on macOS), `rss_bytes` (the
+resident size) and `virtual_memory_bytes`. The resident size also counts the
+clean, file-backed pages of the executable and of the system libraries, which no
+part of the process can free; on a small server that is most of it, so the about
+dialog shows `own_bytes` and `rss_bytes` and leaves the address space out.
+
+Both pollers decode each IMGW response in an arena over `std.heap.page_allocator`
+and release it before the poll ends, so a poll that decodes a few megabytes does
+not leave those pages mapped in the process for the rest of its life. A cold
+start that downloads every product holds about 5 MiB of its own memory and 14 MiB
+resident in the release profile on macOS; the debug build reports about 8 MiB and
+25 MiB for the same work.
 
 The weather stations route keeps synoptic and meteorological readings in one
 table, so its `source` (`synop` or `meteo`) narrows the listing to a single
