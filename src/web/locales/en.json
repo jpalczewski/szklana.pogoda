@@ -11,5 +11,9 @@
   "memory_rss": "Resident memory:",
   "memory_virtual": "Virtual memory:",
   "memory_refresh": "Refresh",
-  "memory_unavailable": "memory statistics unavailable"
+  "memory_unavailable": "memory statistics unavailable",
+  "about_button": "About",
+  "about_title": "About",
+  "about_body": "szklana.pogoda serves IMGW's public data: synoptic and meteorological readings, hydrological gauges and warnings.",
+  "close": "Close"
 }

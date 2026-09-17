@@ -33,6 +33,52 @@
         </dl>
         <button type="button" @click="load" :disabled="loading">{{memory_refresh}}</button>
       </fieldset>
+      <div class="about-panel" x-data="about" @keydown.escape.window="hide">
+        <button
+          type="button"
+          x-ref="launcher"
+          aria-haspopup="dialog"
+          :aria-expanded="open ? 'true' : 'false'"
+          @click="show"
+        >{{about_button}}</button>
+        <div
+          class="modal-backdrop"
+          x-show="open"
+          x-cloak
+          @pointerdown.self="press_backdrop"
+          @pointerup.self="release_backdrop"
+          @pointerup.window="pressed_backdrop = false"
+        >
+          <div
+            class="window about-window"
+            x-ref="dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="about-title"
+            :style="`transform: translate(${offset.x}px, ${offset.y}px)`"
+            @pointerdown="pressed_backdrop = false"
+          >
+            <div
+              class="title-bar"
+              @pointerdown="start_drag"
+              @pointermove="move_drag"
+              @pointerup="end_drag"
+              @pointercancel="end_drag"
+            >
+              <div class="title-bar-text" id="about-title">{{about_title}}</div>
+              <div class="title-bar-controls">
+                <button type="button" class="close" x-ref="closeButton" aria-label="{{close}}" @click="hide"></button>
+              </div>
+            </div>
+            <div class="window-body">
+              <p>{{about_body}}</p>
+              <div class="field-row about-actions">
+                <button type="button" @click="hide">{{close}}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="status-bar">
       <p class="status-bar-field" id="pong">{{ready}}</p>

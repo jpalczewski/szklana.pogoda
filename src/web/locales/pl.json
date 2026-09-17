@@ -11,5 +11,9 @@
   "memory_rss": "Pamięć rezydentna:",
   "memory_virtual": "Pamięć wirtualna:",
   "memory_refresh": "Odśwież",
-  "memory_unavailable": "nie można odczytać pamięci"
+  "memory_unavailable": "nie można odczytać pamięci",
+  "about_button": "O programie",
+  "about_title": "O programie",
+  "about_body": "szklana.pogoda udostępnia publiczne dane IMGW: pomiary synoptyczne i meteorologiczne, stany wód oraz ostrzeżenia.",
+  "close": "Zamknij"
 }
