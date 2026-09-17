@@ -1,6 +1,7 @@
 const std = @import("std");
 const sqlite = @import("sqlite");
 const model = @import("model.zig");
+const timestamps = @import("../timestamps.zig");
 const warnings = @import("../warnings.zig");
 
 /// Warning types are owned by `warnings.zig`; the store only names them in its
@@ -105,23 +106,49 @@ const hydro_columns = joinColumns(&hydro_column_names);
 const hydro_placeholders = placeholders(hydro_column_names.len);
 const hydro_upsert = upsertAssignments(&hydro_column_names);
 
+/// The hydro columns that hold a timestamp. Hydro is the one product whose
+/// parser keeps IMGW's wall-clock form, so a database written before the store
+/// boundary converted it has to be rewritten once; see
+/// `normalizeHydroTimestamps`.
+const hydro_timestamp_columns = [_][]const u8{
+    "water_level_observed_at",
+    "water_temperature_observed_at",
+    "flow_observed_at",
+    "ice_phenomenon_observed_at",
+    "overgrowth_phenomenon_observed_at",
+};
+
+/// Bumped whenever the schema gains a rewrite that existing rows need. The
+/// value lives in SQLite's own `user_version`, so no extra table is needed.
+const hydro_timestamp_version = 1;
+
+/// Marks the rows a running migration has already shifted. The format is not a
+/// timestamp: staying 19 characters long keeps the marker out of the
+/// `length(...) = 19` guard that selects the pre-migration rows.
+const migration_marker = "'~local-to-utc~'";
+const pragmaUserVersion = "PRAGMA user_version = " ++ std.fmt.comptimePrint("{d}", .{hydro_timestamp_version});
+
 pub const Store = struct {
     db: sqlite.Db,
+    /// The wall clock the store reads; only the one-time hydro migration in
+    /// `normalizeHydroTimestamps` needs it.
+    clock: timestamps.Clock = .fixed(),
 
-    pub fn initFile(path: [:0]const u8) !Store {
+    pub fn initFile(allocator: std.mem.Allocator, path: [:0]const u8, clock: timestamps.Clock) !Store {
         var store: Store = .{
             .db = try sqlite.Db.init(.{
                 .mode = .{ .File = path },
                 .open_flags = .{ .write = true, .create = true },
                 .threading_mode = .Serialized,
             }),
+            .clock = clock,
         };
         errdefer store.deinit();
-        try store.migrate();
+        try store.migrate(allocator);
         return store;
     }
 
-    pub fn initMemory() !Store {
+    pub fn initMemory(allocator: std.mem.Allocator) !Store {
         var store: Store = .{
             .db = try sqlite.Db.init(.{
                 .mode = .Memory,
@@ -130,12 +157,51 @@ pub const Store = struct {
             }),
         };
         errdefer store.deinit();
-        try store.migrate();
+        try store.migrate(allocator);
         return store;
     }
 
     pub fn deinit(self: *Store) void {
         self.db.deinit();
+    }
+
+    /// Reports whether `source` was polled successfully within the last
+    /// `max_age_seconds`, so the updater can keep serving what it already
+    /// stored instead of downloading the same data again. A source that has
+    /// never been polled is never fresh.
+    pub fn isFresh(self: *Store, source: []const u8, now_epoch: u64, max_age_seconds: u64) !bool {
+        const last_success = try self.lastPollEpoch(source) orelse return false;
+        if (last_success < 0) return false;
+        // A poll dated in the future still counts as fresh rather than wrapping
+        // around, which keeps the comparison below clear of unsigned overflow.
+        const success_epoch: u64 = @intCast(last_success);
+        if (success_epoch >= now_epoch) return true;
+        return now_epoch - success_epoch <= max_age_seconds;
+    }
+
+    /// Stamps a successful poll of `source`. The updater calls this after a
+    /// batch has been recorded, so only a poll that produced stored data can
+    /// make the next one look fresh.
+    pub fn recordPoll(self: *Store, source: []const u8, now_epoch: u64) !void {
+        try self.db.exec(
+            \\INSERT INTO source_state (source, last_success_epoch)
+            \\VALUES (?, ?)
+            \\ON CONFLICT (source) DO UPDATE SET
+            \\    last_success_epoch = excluded.last_success_epoch
+        ,
+            .{},
+            .{ source, now_epoch },
+        );
+    }
+
+    /// The epoch of the last successful poll of `source`, or null when the
+    /// source has never been polled.
+    fn lastPollEpoch(self: *Store, source: []const u8) !?i64 {
+        var statement = try self.db.prepare(
+            "SELECT last_success_epoch FROM source_state WHERE source = ?",
+        );
+        defer statement.deinit();
+        return statement.one(i64, .{}, .{source});
     }
 
     pub fn record(self: *Store, observation: model.Observation) !void {
@@ -423,7 +489,11 @@ pub const Store = struct {
         return items.toOwnedSlice(allocator);
     }
 
-    fn migrate(self: *Store) !void {
+    /// Creates the schema and brings a database written by an older build up to
+    /// date. The hydro table gained `normalized_at` when every timestamp it
+    /// stores moved to the UTC form the other products already used, so
+    /// `user_version` tracks which rewrites have already run.
+    fn migrate(self: *Store, allocator: std.mem.Allocator) !void {
         try self.db.execMulti(
             \\CREATE TABLE IF NOT EXISTS weather_observations (
             \\    station_id TEXT NOT NULL,
@@ -439,7 +509,7 @@ pub const Store = struct {
             \\);
             \\CREATE INDEX IF NOT EXISTS weather_observations_station_time
             \\    ON weather_observations (station_id, observed_at);
-            \\CREATE TABLE IF NOT EXISTS hydro_observations (station_id TEXT NOT NULL, station_name TEXT NOT NULL, river TEXT NOT NULL, voivodeship TEXT NOT NULL, longitude REAL, latitude REAL, founded_year INTEGER, gauge_zero_m REAL, river_km REAL, warning_level_cm REAL, alarm_level_cm REAL, water_level_cm REAL, water_level_observed_at TEXT NOT NULL, water_temperature_c REAL, water_temperature_observed_at TEXT, flow_m3_s REAL, flow_observed_at TEXT, ice_phenomenon INTEGER, ice_phenomenon_observed_at TEXT, overgrowth_phenomenon INTEGER, overgrowth_phenomenon_observed_at TEXT, water_level_status TEXT NOT NULL, PRIMARY KEY (station_id, water_level_observed_at));
+            \\CREATE TABLE IF NOT EXISTS hydro_observations (station_id TEXT NOT NULL, station_name TEXT NOT NULL, river TEXT NOT NULL, voivodeship TEXT NOT NULL, longitude REAL, latitude REAL, founded_year INTEGER, gauge_zero_m REAL, river_km REAL, warning_level_cm REAL, alarm_level_cm REAL, water_level_cm REAL, water_level_observed_at TEXT NOT NULL, water_temperature_c REAL, water_temperature_observed_at TEXT, flow_m3_s REAL, flow_observed_at TEXT, ice_phenomenon INTEGER, ice_phenomenon_observed_at TEXT, overgrowth_phenomenon INTEGER, overgrowth_phenomenon_observed_at TEXT, water_level_status TEXT NOT NULL, normalized_at TEXT, PRIMARY KEY (station_id, water_level_observed_at));
             \\CREATE INDEX IF NOT EXISTS hydro_observations_station_time ON hydro_observations (station_id, water_level_observed_at);
             \\CREATE TABLE IF NOT EXISTS weather_warnings (
             \\    source TEXT NOT NULL,
@@ -470,14 +540,91 @@ pub const Store = struct {
             \\    basin_code TEXT NOT NULL DEFAULT '',
             \\    PRIMARY KEY (source, warning_id, revision, teryt, voivodeship, description, basin_code)
             \\);
+            \\CREATE TABLE IF NOT EXISTS source_state (
+            \\    source TEXT NOT NULL PRIMARY KEY,
+            \\    last_success_epoch INTEGER NOT NULL
+            \\);
         ,
             .{},
         );
+        try self.normalizeHydroTimestamps(allocator);
+    }
+
+    /// Rewrites hydro timestamps stored before hydro adopted the UTC form. The
+    /// `"YYYY-MM-DD HH:MM:SS"` values are Europe/Warsaw wall clock, so the
+    /// Warsaw offset of each reading is added to it. The offset comes from
+    /// `timestamps`, so the rewrite and the parser cannot apply different rules,
+    /// and the rows are published through the regular insert because a shifted
+    /// timestamp can land on another row's primary key.
+    ///
+    /// Timestamps already written as `"YYYY-MM-DDTHH:MM:SSZ"` are recognisable
+    /// by their length, which also keeps a second run harmless; `user_version`
+    /// guards that on top.
+    fn normalizeHydroTimestamps(self: *Store, allocator: std.mem.Allocator) !void {
+        const version = (try self.db.pragma(i64, .{}, "user_version", null)) orelse 0;
+        if (version >= hydro_timestamp_version) return;
+
+        if (!try hasNormalizedMarker(&self.db)) {
+            try self.db.exec("ALTER TABLE hydro_observations ADD COLUMN normalized_at TEXT", .{}, .{});
+        }
+
+        // Every timestamp column holds the same wall-clock form, so one
+        // conversion per distinct reading serves all five of them.
+        try self.db.exec(
+            "CREATE TEMP TABLE IF NOT EXISTS hydro_timestamp_shift (local TEXT NOT NULL PRIMARY KEY, utc TEXT NOT NULL)",
+            .{},
+            .{},
+        );
+        try self.db.exec("DELETE FROM hydro_timestamp_shift", .{}, .{});
+
+        var statement = try self.db.prepare(
+            "SELECT DISTINCT trim(water_level_observed_at) FROM hydro_observations WHERE length(trim(water_level_observed_at)) = 19",
+        );
+        defer statement.deinit();
+        var rows = try statement.iteratorAlloc([]const u8, allocator, .{});
+        while (try rows.nextAlloc(allocator, .{})) |local| {
+            defer allocator.free(local);
+            const utc_text = try shiftedTimestamp(&self.clock, allocator, local);
+            defer allocator.free(utc_text);
+            try self.db.exec(
+                "INSERT OR REPLACE INTO hydro_timestamp_shift (local, utc) VALUES (?, ?)",
+                .{},
+                .{ local, utc_text },
+            );
+        }
+
+        inline for (hydro_timestamp_columns) |column| {
+            const shift = comptime "UPDATE hydro_observations SET " ++ column ++
+                " = (SELECT utc FROM hydro_timestamp_shift WHERE local = " ++ column ++ "), normalized_at = " ++ migration_marker ++
+                " WHERE length(" ++ column ++ ") = 19";
+            try self.db.exec(shift, .{}, .{});
+        }
+        const publish = "INSERT OR REPLACE INTO hydro_observations (" ++ hydro_columns ++ ")\n" ++
+            "SELECT " ++ hydro_columns ++ " FROM hydro_observations WHERE normalized_at = " ++ migration_marker;
+        try self.db.exec(publish, .{}, .{});
+        try self.db.exec("DELETE FROM hydro_observations WHERE normalized_at IS NOT NULL AND normalized_at <> " ++ migration_marker, .{}, .{});
+        try self.db.exec("UPDATE hydro_observations SET normalized_at = NULL WHERE normalized_at = " ++ migration_marker, .{}, .{});
+        try self.db.exec(pragmaUserVersion, .{}, .{});
     }
 };
 
 fn warningSource(value: []const u8) !WarningSource {
     return WarningSource.fromQuery(value) orelse error.InvalidData;
+}
+
+/// Reports whether a legacy hydro table already carries the marker column, so
+/// the migration does not try to add it twice.
+fn hasNormalizedMarker(db: *sqlite.Db) !bool {
+    const present = (try db.one(i64, "SELECT COUNT(*) FROM pragma_table_info('hydro_observations') WHERE name = 'normalized_at'", .{}, .{})) orelse 0;
+    return present > 0;
+}
+
+/// Rewrites one IMGW wall-clock reading into the UTC-suffixed form the store
+/// keeps. The instant is the reading less its Warsaw offset; the offset is
+/// derived two hours back so a reading inside a fall-back night still lands on
+/// the offset that was in force when it was taken.
+fn shiftedTimestamp(clock: *const timestamps.Clock, allocator: std.mem.Allocator, local: []const u8) ![]u8 {
+    return clock.utcText(allocator, try clock.resolveInstant(local));
 }
 
 /// Comma-joins column names for an insert or select list. Every caller needs
@@ -558,7 +705,7 @@ fn takeAreaText(allocator: std.mem.Allocator, value: []const u8) ?[]const u8 {
 }
 
 test "stores each station observation once and returns its history" {
-    var store = try Store.initMemory();
+    var store = try Store.initMemory(std.testing.allocator);
     defer store.deinit();
 
     try store.record(.{
@@ -590,6 +737,29 @@ test "stores each station observation once and returns its history" {
     try std.testing.expectEqual(@as(usize, 1), observations.len);
     try std.testing.expectEqualStrings("Wrocław", observations[0].station_name);
     try std.testing.expectApproxEqAbs(@as(f64, 18.5), observations[0].temperature_c.?, 0.001);
+}
+
+test "a source is fresh only until its recorded poll ages out" {
+    var store = try Store.initMemory(std.testing.allocator);
+    defer store.deinit();
+
+    // Nothing was polled yet, so even a brand new process has to fetch.
+    try std.testing.expect(!try store.isFresh("synop", 1_000, 600));
+
+    try store.recordPoll("synop", 1_000);
+    try std.testing.expect(try store.isFresh("synop", 1_000, 600));
+    try std.testing.expect(try store.isFresh("synop", 1_600, 600));
+    // Exactly at the limit the data is still considered fresh, and one second
+    // later it is not.
+    try std.testing.expect(!try store.isFresh("synop", 1_601, 600));
+
+    // Sources are tracked independently, so a fresh synop does not hide a
+    // stale meteo.
+    try std.testing.expect(!try store.isFresh("meteo", 1_600, 600));
+    try store.recordPoll("meteo", 1_200);
+    try std.testing.expect(try store.isFresh("meteo", 1_600, 600));
+    try store.recordPoll("synop", 1_600);
+    try std.testing.expect(try store.isFresh("synop", 1_600, 600));
 }
 
 fn testWarning() Warning {
@@ -629,7 +799,7 @@ fn testHydroWarning() Warning {
 }
 
 test "records a warning once and only refreshes its last seen time" {
-    var store = try Store.initMemory();
+    var store = try Store.initMemory(std.testing.allocator);
     defer store.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), try store.recordWarnings(&.{testWarning()}, "2026-09-16 23:05:00"));
@@ -647,7 +817,7 @@ test "records a warning once and only refreshes its last seen time" {
 }
 
 test "changed warning content becomes a new stored revision" {
-    var store = try Store.initMemory();
+    var store = try Store.initMemory(std.testing.allocator);
     defer store.deinit();
 
     _ = try store.recordWarnings(&.{testWarning()}, "2026-09-16 23:05:00");
@@ -675,7 +845,7 @@ test "changed warning content becomes a new stored revision" {
 }
 
 test "active warnings expire, filter by TERYT and stay source separated" {
-    var store = try Store.initMemory();
+    var store = try Store.initMemory(std.testing.allocator);
     defer store.deinit();
 
     var without_areas = testWarning();
@@ -749,11 +919,11 @@ fn testHydroObservation() model.HydroObservation {
         .warning_level_cm = 300,
         .alarm_level_cm = 340,
         .water_level_cm = 310,
-        .water_level_observed_at = "2026-09-16 07:50:00",
+        .water_level_observed_at = "2026-09-16T05:50:00Z",
         .water_temperature_c = 12.5,
-        .water_temperature_observed_at = "2026-09-16 07:50:00",
+        .water_temperature_observed_at = "2026-09-16T05:50:00Z",
         .flow_m3_s = 0.11,
-        .flow_observed_at = "2026-09-16 07:50:00",
+        .flow_observed_at = "2026-09-16T05:50:00Z",
         .ice_phenomenon = null,
         .ice_phenomenon_observed_at = null,
         .overgrowth_phenomenon = null,
@@ -763,33 +933,87 @@ fn testHydroObservation() model.HydroObservation {
 }
 
 test "stores gauge readings and returns the latest one plus their history" {
-    var store = try Store.initMemory();
+    var store = try Store.initMemory(std.testing.allocator);
     defer store.deinit();
 
     try store.recordHydro(testHydroObservation());
 
     var newer = testHydroObservation();
-    newer.water_level_observed_at = "2026-09-16 08:50:00";
+    newer.water_level_observed_at = "2026-09-16T06:50:00Z";
     newer.water_level_cm = 320;
     try store.recordHydro(newer);
 
     const stations = try store.hydroStations(std.testing.allocator);
     defer model.deinitHydro(std.testing.allocator, stations);
     try std.testing.expectEqual(@as(usize, 1), stations.len);
-    try std.testing.expectEqualStrings("2026-09-16 08:50:00", stations[0].water_level_observed_at.?);
+    try std.testing.expectEqualStrings("2026-09-16T06:50:00Z", stations[0].water_level_observed_at.?);
     try std.testing.expectApproxEqAbs(@as(f64, 320), stations[0].water_level_cm.?, 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 0.11), stations[0].flow_m3_s.?, 0.001);
     try std.testing.expectEqualStrings("Skroda", stations[0].river);
 
-    const history = try store.hydroHistory(std.testing.allocator, "151140030", "2026-09-16 00:00:00");
+    const history = try store.hydroHistory(std.testing.allocator, "151140030", "2026-09-16T00:00:00Z");
     defer model.deinitHydro(std.testing.allocator, history);
     try std.testing.expectEqual(@as(usize, 2), history.len);
-    try std.testing.expectEqualStrings("2026-09-16 07:50:00", history[0].water_level_observed_at.?);
+    try std.testing.expectEqualStrings("2026-09-16T05:50:00Z", history[0].water_level_observed_at.?);
 
     // Re-recording the same reading updates it in place instead of adding a row.
     try store.recordHydro(testHydroObservation());
-    const unchanged = try store.hydroHistory(std.testing.allocator, "151140030", "2026-09-16 00:00:00");
+    const unchanged = try store.hydroHistory(std.testing.allocator, "151140030", "2026-09-16T00:00:00Z");
     defer model.deinitHydro(std.testing.allocator, unchanged);
     try std.testing.expectEqual(@as(usize, 2), unchanged.len);
     try std.testing.expectApproxEqAbs(@as(f64, 310), unchanged[0].water_level_cm.?, 0.001);
+}
+
+test "a legacy hydro timestamp is rewritten from Warsaw wall clock to UTC" {
+    var path_buffer: [128]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buffer, "/tmp/szklana-pogoda-migration-{d}.db", .{std.os.linux.getpid()});
+    const cwd = std.Io.Dir.cwd();
+    cwd.deleteFile(std.testing.io, path) catch {};
+    defer cwd.deleteFile(std.testing.io, path) catch {};
+    // A database as the previous build left it: the hydro table without the
+    // marker column, a row holding a Warsaw wall-clock timestamp, and a
+    // user_version that still asks for the rewrite.
+    {
+        var legacy = try sqlite.Db.init(.{
+            .mode = .{ .File = path },
+            .open_flags = .{ .write = true, .create = true },
+            .threading_mode = .Serialized,
+        });
+        defer legacy.deinit();
+        try legacy.exec("CREATE TABLE hydro_observations (station_id TEXT NOT NULL, station_name TEXT NOT NULL, river TEXT NOT NULL, voivodeship TEXT NOT NULL, longitude REAL, latitude REAL, founded_year INTEGER, gauge_zero_m REAL, river_km REAL, warning_level_cm REAL, alarm_level_cm REAL, water_level_cm REAL, water_level_observed_at TEXT NOT NULL, water_temperature_c REAL, water_temperature_observed_at TEXT, flow_m3_s REAL, flow_observed_at TEXT, ice_phenomenon INTEGER, ice_phenomenon_observed_at TEXT, overgrowth_phenomenon INTEGER, overgrowth_phenomenon_observed_at TEXT, water_level_status TEXT NOT NULL, PRIMARY KEY (station_id, water_level_observed_at))", .{}, .{});
+        try legacy.exec("INSERT INTO hydro_observations VALUES ('151140030', 'Przewoźniki', 'Skroda', 'lubuskie', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 310, '2026-09-16 07:50:00', NULL, '2026-09-16 07:50:00', NULL, '2026-09-16 07:50:00', NULL, '2026-09-16 07:50:00', NULL, '2026-09-16 07:50:00', 'warning')", .{}, .{});
+        try legacy.exec("PRAGMA user_version = 0", .{}, .{});
+    }
+
+    var store = try Store.initFile(std.testing.allocator, path, .fixed());
+    defer store.deinit();
+
+    var rows = try store.db.prepare("SELECT water_level_observed_at, flow_observed_at, overgrowth_phenomenon_observed_at, normalized_at FROM hydro_observations");
+    defer rows.deinit();
+    const row = (try rows.oneAlloc(struct {
+        water_level_observed_at: []const u8,
+        flow_observed_at: []const u8,
+        overgrowth_phenomenon_observed_at: []const u8,
+        normalized_at: ?[]const u8,
+    }, std.testing.allocator, .{}, .{})).?;
+    defer std.testing.allocator.free(row.water_level_observed_at);
+    defer std.testing.allocator.free(row.flow_observed_at);
+    defer std.testing.allocator.free(row.overgrowth_phenomenon_observed_at);
+    defer if (row.normalized_at) |marker| std.testing.allocator.free(marker);
+
+    // 07:50 in Warsaw summer time is 05:50 UTC, and the marker is cleared so
+    // the regular queries never see it.
+    try std.testing.expectEqualStrings("2026-09-16T05:50:00Z", row.water_level_observed_at);
+    try std.testing.expectEqualStrings("2026-09-16T05:50:00Z", row.flow_observed_at);
+    try std.testing.expectEqualStrings("2026-09-16T05:50:00Z", row.overgrowth_phenomenon_observed_at);
+    try std.testing.expect(row.normalized_at == null);
+    try std.testing.expectEqual(hydro_timestamp_version, (try store.db.pragma(i64, .{}, "user_version", null)).?);
+
+    // Re-running is a no-op, so the timestamps are not shifted twice.
+    try store.migrate(std.testing.allocator);
+    var again = try store.db.prepare("SELECT water_level_observed_at FROM hydro_observations");
+    defer again.deinit();
+    const unchanged = (try again.oneAlloc([]const u8, std.testing.allocator, .{}, .{})).?;
+    defer std.testing.allocator.free(unchanged);
+    try std.testing.expectEqualStrings("2026-09-16T05:50:00Z", unchanged);
 }

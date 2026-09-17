@@ -70,7 +70,8 @@ pub fn optionalTimestamp(allocator: std.mem.Allocator, value: ?[]const u8) Error
 }
 
 /// Rewrites an IMGW wall-clock timestamp as the ISO-like, UTC-suffixed form
-/// the store keeps, for example `"2026-09-17T07:00:00Z"`.
+/// the store keeps, for example `"2026-09-17T07:00:00Z"`. Every product is
+/// stored in that one form, so timestamps of different products compare.
 pub fn utcTimestamp(allocator: std.mem.Allocator, local: []const u8) Error![]u8 {
     if (!isTimestamp(local)) return error.InvalidData;
     return std.fmt.allocPrint(allocator, "{s}T{s}Z", .{ local[0..10], local[11..] });

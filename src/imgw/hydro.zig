@@ -56,6 +56,7 @@ fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!model.HydroObservation
     errdefer {
         if (level_time) |text| allocator.free(text);
     }
+    // The gauge carries no usable measurement without a level timestamp.
     if (level_time == null) return error.InvalidData;
 
     const level = try value.optionalFloat(raw.stan_wody);
@@ -102,7 +103,7 @@ fn levelStatus(level: ?f64, warning: ?f64, alarm: ?f64) []const u8 {
 
 test "parses hydro station and computes threshold status" {
     const body =
-        \\[{"id_stacji":"151140030","stacja":"Przewoźniki","rzeka":"Skroda","wojewodztwo":"lubuskie","lon":"14.8217","lat":"51.5253","stan_alarmowy":"340","stan_ostrzegawczy":"300","stan_wody":"310","stan_wody_data_pomiaru":"2026-09-16 07:50:00","przeplyw":"0.11"}]
+        \\[{"id_stacji":"151140030","stacja":"Przewoźniki","rzeka":"Skroda","wojewodztwo":"lubuskie","lon":"14.8217","lat":"51.5253","stan_alarmowy":"340","stan_ostrzegawczy":"300","stan_wody":"310","stan_wody_data_pomiaru":"2026-09-16 07:50:00","przeplyw":"0.11","przeplyw_data":"2026-09-16 07:50:00"}]
     ;
     const items = try parse(std.testing.allocator, body);
     defer model.deinitHydro(std.testing.allocator, items);
@@ -110,6 +111,7 @@ test "parses hydro station and computes threshold status" {
     try std.testing.expectEqual(@as(usize, 1), items.len);
     try std.testing.expectEqualStrings("warning", items[0].water_level_status);
     try std.testing.expectEqualStrings("2026-09-16 07:50:00", items[0].water_level_observed_at.?);
+    try std.testing.expectEqualStrings("2026-09-16 07:50:00", items[0].flow_observed_at.?);
 }
 
 test "hydro status is unknown without thresholds" {
@@ -127,6 +129,20 @@ test "skips hydro stations without a level timestamp" {
     const items = try parse(std.testing.allocator, body);
     defer model.deinitHydro(std.testing.allocator, items);
     try std.testing.expectEqual(@as(usize, 0), items.len);
+}
+
+test "every hydro timestamp keeps the IMGW wall-clock form" {
+    const body =
+        \\[{"id_stacji":"151140030","stacja":"Przewoźniki","rzeka":"Skroda","stan_wody":"310","stan_wody_data_pomiaru":"2026-09-16 07:50:00","temperatura_wody":"12.5","temperatura_wody_data_pomiaru":"2026-09-16 07:45:00","przeplyw":"0.11","przeplyw_data":"2026-09-16 07:40:00","zjawisko_lodowe":"0","zjawisko_lodowe_data_pomiaru":"2026-09-16 07:30:00","zjawisko_zarastania":"1","zjawisko_zarastania_data_pomiaru":"2026-09-16 07:20:00"}]
+    ;
+    const items = try parse(std.testing.allocator, body);
+    defer model.deinitHydro(std.testing.allocator, items);
+
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expectEqualStrings("2026-09-16 07:45:00", items[0].water_temperature_observed_at.?);
+    try std.testing.expectEqualStrings("2026-09-16 07:40:00", items[0].flow_observed_at.?);
+    try std.testing.expectEqualStrings("2026-09-16 07:30:00", items[0].ice_phenomenon_observed_at.?);
+    try std.testing.expectEqualStrings("2026-09-16 07:20:00", items[0].overgrowth_phenomenon_observed_at.?);
 }
 
 test "keeps a dash river name because IMGW uses it for harbour gauges" {
