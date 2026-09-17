@@ -225,6 +225,7 @@ test "memory endpoint returns JSON memory statistics" {
     try std.testing.expectEqualStrings("application/json; charset=utf-8", response.content_type);
     try std.testing.expect(std.mem.startsWith(u8, response.body, "{\"rss_bytes\":"));
     try std.testing.expect(std.mem.indexOf(u8, response.body, ",\"virtual_memory_bytes\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response.body, ",\"own_bytes\":") != null);
     try std.testing.expect(std.mem.endsWith(u8, response.body, "}"));
 }
 

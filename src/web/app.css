@@ -41,6 +41,11 @@ body {
   text-align: right;
 }
 
+.memory-note {
+  font-size: 0.75rem;
+  margin: 0 0 0.5rem;
+}
+
 .about-panel,
 .imgw-panel {
   margin-top: 1rem;
