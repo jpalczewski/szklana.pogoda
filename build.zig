@@ -18,6 +18,9 @@ pub fn build(b: *std.Build) void {
     render_i18n.addFileArg(b.path("src/web/locales/pl.json"));
     render_i18n.addFileArg(b.path("src/web/locales/en.json"));
     const i18n_source = render_i18n.addOutputFileArg("i18n.zig");
+    // The generator draws the weather icons from this file into /icons.svg and
+    // /favicon.svg.
+    render_i18n.addFileArg(b.path("src/web/weather_icons.txt"));
     // The page links each asset by a hash of its content, so the generator
     // must see the assets as inputs: as file arguments the step re-runs when
     // one changes, and a plain path string would leave the hash stale.

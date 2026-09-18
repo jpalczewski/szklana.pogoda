@@ -39,6 +39,17 @@ pub fn alpineScript(_: *router.App, ctx: *router.RequestContext) router.AppError
     return asset(ctx, router.Response.javascript(alpine_js), i18n.versions.@"alpine.js");
 }
 
+/// The weather icons as one sprite of `<symbol>`s, drawn by the build from
+/// `src/web/weather_icons.txt`.
+pub fn iconSprite(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
+    return asset(ctx, router.Response.svg(i18n.icons_svg), i18n.versions.@"icons.svg");
+}
+
+/// The favicon: one of the same icons as a stand-alone image.
+pub fn favicon(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
+    return asset(ctx, router.Response.svg(i18n.favicon_svg), i18n.versions.@"favicon.svg");
+}
+
 fn page(response: router.Response) router.Response {
     var result = response;
     result.cache_control = revalidate;
@@ -105,6 +116,8 @@ test "the served page links every asset by the hash the handlers expect" {
         "/app.css?v=" ++ i18n.versions.@"app.css",
         "/app.js?v=" ++ i18n.versions.@"app.js",
         "/alpine.js?v=" ++ i18n.versions.@"alpine.js",
+        "/favicon.svg?v=" ++ i18n.versions.@"favicon.svg",
+        "data-weather-icons=\"/icons.svg?v=" ++ i18n.versions.@"icons.svg",
     };
     for (links) |link| {
         try std.testing.expect(std.mem.find(u8, i18n.pl_html, link) != null);
@@ -121,4 +134,40 @@ test "a versioned asset URL still reaches its route" {
     const response = try router.dispatch(&routes, &app, &ctx);
 
     try std.testing.expectEqualStrings("text/javascript; charset=utf-8", response.content_type);
+}
+
+test "the icon sprite has a symbol for every forecast icon" {
+    var app: router.App = .{ .max_body_bytes = 16 };
+    var ctx = testContext("/icons.svg", null);
+
+    const response = try iconSprite(&app, &ctx);
+
+    try std.testing.expectEqualStrings("image/svg+xml", response.content_type);
+    for ([_][]const u8{ "clear", "partly", "cloudy", "fog", "drizzle", "rain", "showers", "snow", "thunderstorm" }) |name| {
+        var needle_buffer: [64]u8 = undefined;
+        const needle = try std.fmt.bufPrint(&needle_buffer, "<symbol id=\"{s}\"", .{name});
+        try std.testing.expect(std.mem.find(u8, response.body, needle) != null);
+    }
+}
+
+test "the favicon is a stand-alone svg" {
+    var app: router.App = .{ .max_body_bytes = 16 };
+    var ctx = testContext("/favicon.svg", null);
+
+    const response = try favicon(&app, &ctx);
+
+    try std.testing.expectEqualStrings("image/svg+xml", response.content_type);
+    try std.testing.expect(std.mem.startsWith(u8, response.body, "<svg xmlns="));
+    try std.testing.expect(std.mem.find(u8, response.body, "<symbol") == null);
+}
+
+test "the icon files are cached for good only by their current hash" {
+    var app: router.App = .{ .max_body_bytes = 16 };
+    var query_buffer: [64]u8 = undefined;
+    const query = try std.fmt.bufPrint(&query_buffer, "v={s}", .{i18n.versions.@"icons.svg"});
+    var current = testContext("/icons.svg", query);
+    var bare = testContext("/icons.svg", null);
+
+    try std.testing.expectEqualStrings(immutable, (try iconSprite(&app, &current)).cache_control.?);
+    try std.testing.expectEqualStrings(revalidate, (try iconSprite(&app, &bare)).cache_control.?);
 }

@@ -4,10 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{page_title}}</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v={{version:favicon.svg}}" />
   <link rel="stylesheet" href="/98.css?v={{version:98.css}}" />
   <link rel="stylesheet" href="/app.css?v={{version:app.css}}" />
 </head>
 <body
+  data-weather-icons="/icons.svg?v={{version:icons.svg}}"
   data-http-error="{{http_error}}"
   data-memory-unavailable="{{memory_unavailable}}"
   data-imgw-unavailable="{{imgw_unavailable}}"

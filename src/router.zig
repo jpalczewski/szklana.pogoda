@@ -61,6 +61,10 @@ pub const Response = struct {
         return .{ .status = .ok, .content_type = "text/css; charset=utf-8", .body = body };
     }
 
+    pub fn svg(body: []const u8) Response {
+        return .{ .status = .ok, .content_type = "image/svg+xml", .body = body };
+    }
+
     pub fn javascript(body: []const u8) Response {
         return .{ .status = .ok, .content_type = "text/javascript; charset=utf-8", .body = body };
     }
