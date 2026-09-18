@@ -15,6 +15,7 @@ const std = @import("std");
 const Io = std.Io;
 
 const cities = @import("cities.zig");
+const http_fetch = @import("../http_fetch.zig");
 
 pub const Error = std.mem.Allocator.Error || error{
     /// The endpoint answered with something that is not the documented object.
@@ -288,20 +289,9 @@ fn nowSeconds(io: Io) i64 {
     return Io.Clock.real.now(io).toSeconds();
 }
 
-/// The production transport. Only a 200 answer with a body is a response; every
-/// other outcome is `NetworkUnavailable`.
+/// The production transport, shared with every other source module.
 fn httpFetch(allocator: std.mem.Allocator, io: Io, url: []const u8) Error![]u8 {
-    var client: std.http.Client = .{ .allocator = allocator, .io = io };
-    defer client.deinit();
-
-    var body: Io.Writer.Allocating = .init(allocator);
-    defer body.deinit();
-    const result = client.fetch(.{
-        .location = .{ .url = url },
-        .response_writer = &body.writer,
-    }) catch return error.NetworkUnavailable;
-    if (result.status != .ok) return error.NetworkUnavailable;
-    return body.toOwnedSlice() catch return error.OutOfMemory;
+    return http_fetch.get(allocator, io, url);
 }
 
 test "parses the documented payload" {

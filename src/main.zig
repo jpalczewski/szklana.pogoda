@@ -16,6 +16,7 @@ const weather = @import("weather/mod.zig");
 const timestamps = @import("timestamps.zig");
 const warnings = @import("warnings.zig");
 const process_memory = @import("process_memory.zig");
+const http_fetch = @import("http_fetch.zig");
 
 /// Every module of the server, named once so the analysis below and the test
 /// collection at the end of this file cannot drift apart.
@@ -34,6 +35,7 @@ const modules = .{
     antistorm,
     imgw,
     weather,
+    http_fetch,
 };
 
 /// Forces the semantic analyzer over every function of a module, so production
