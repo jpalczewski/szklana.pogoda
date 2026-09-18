@@ -49,6 +49,9 @@ pub const Response = struct {
     content_type: []const u8,
     body: []const u8,
     allow: ?[]const u8 = null,
+    /// Sent as `Cache-Control` when set. Without it the response carries no
+    /// caching policy, and a CDN in front picks one for the file type.
+    cache_control: ?[]const u8 = null,
 
     pub fn html(body: []const u8) Response {
         return .{ .status = .ok, .content_type = "text/html; charset=utf-8", .body = body };

@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{page_title}}</title>
-  <link rel="stylesheet" href="/98.css" />
-  <link rel="stylesheet" href="/app.css" />
+  <link rel="stylesheet" href="/98.css?v={{version:98.css}}" />
+  <link rel="stylesheet" href="/app.css?v={{version:app.css}}" />
 </head>
 <body
   data-http-error="{{http_error}}"
@@ -586,7 +586,7 @@
     </div>
   </div>
 
-  <script defer src="/app.js"></script>
-  <script defer src="/alpine.js"></script>
+  <script defer src="/app.js?v={{version:app.js}}"></script>
+  <script defer src="/alpine.js?v={{version:alpine.js}}"></script>
 </body>
 </html>
