@@ -18,13 +18,21 @@ RUN curl -fsSL -o /tmp/zig.tar.xz "https://ziglang.org/download/${ZIG_VERSION}/z
 
 WORKDIR /src
 COPY build.zig build.zig.zon ./
+# Fetch dependencies (zig-sqlite, zeit, zlinter — the latter is `@import`ed by
+# build.zig itself, so even discovering the build graph needs it fetched)
+# before copying source, so this layer's cache survives source-only changes
+# and doesn't re-clone/re-download on every commit.
+#
+# `--fetch` also triggers zig-sqlite's own dependency, the sqlite.org
+# amalgamation zip, as a nested fetch; from a cold cache that fetch fails with
+# "failed to create temporary zip file: FileNotFound" because Zig 0.16 doesn't
+# create the global cache's tmp/ directory before writing into it.
+# Pre-creating it works around the bug (upstream: https://github.com/ziglang/zig,
+# zip fetch path).
+RUN mkdir -p /root/.cache/zig/tmp && /opt/zig/zig build --fetch=all -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
+
 COPY src ./src
 COPY tools ./tools
-# `zig build` fetches zig-sqlite's own dependency, the sqlite.org amalgamation
-# zip, as a nested fetch; from a cold cache that fetch fails with "failed to
-# create temporary zip file: FileNotFound" because Zig 0.16 doesn't create the
-# global cache's tmp/ directory before writing into it. Pre-creating it works
-# around the bug (upstream: https://github.com/ziglang/zig, zip fetch path).
 RUN mkdir -p /root/.cache/zig/tmp && /opt/zig/zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
 
 FROM alpine:3.24
