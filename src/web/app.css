@@ -42,6 +42,131 @@ body {
   margin: 0 0 0.5rem;
 }
 
+.forecast-panel {
+  margin: 0;
+}
+
+.forecast-combo label {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+/* The suggestions hang under the field without pushing the rest of the panel
+ * down, so the list is positioned against this wrapper. */
+.forecast-search {
+  position: relative;
+}
+
+.forecast-search input {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.forecast-suggestions {
+  background: #fff;
+  box-shadow: inset -1px -1px #0a0a0a, inset 1px 1px #808080, 1px 1px 0 #0a0a0a;
+  left: 0;
+  list-style: none;
+  margin: 0;
+  max-height: 14rem;
+  overflow-y: auto;
+  padding: 2px;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 5;
+}
+
+.forecast-suggestions li {
+  cursor: default;
+  padding: 2px 4px;
+}
+
+.forecast-suggestions li.active {
+  background: #000080;
+  color: #fff;
+}
+
+.forecast-hint {
+  margin: 0.25rem 0 0;
+}
+
+.forecast-actions {
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.forecast-actions button {
+  flex: none;
+}
+
+.forecast-result {
+  margin-top: 0.75rem;
+}
+
+.forecast-place {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+}
+
+.forecast-now {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+}
+
+.forecast-now strong {
+  font-size: 1.5rem;
+}
+
+.forecast-icon {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.forecast-facts {
+  display: grid;
+  gap: 0.25rem 1rem;
+  grid-template-columns: 1fr auto;
+  margin: 0 0 0.75rem;
+}
+
+.forecast-facts dt,
+.forecast-facts dd {
+  margin: 0;
+}
+
+.forecast-facts dd {
+  text-align: right;
+}
+
+.forecast-days {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.forecast-days th,
+.forecast-days td {
+  padding: 2px 4px;
+  text-align: left;
+}
+
+.forecast-days th:nth-child(n + 3),
+.forecast-days td:nth-child(n + 3) {
+  text-align: right;
+}
+
+.forecast-days td [role="img"] {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.forecast-days tbody tr:nth-child(odd) {
+  background: #f0f0f0;
+}
+
 .about-panel,
 .imgw-panel {
   margin-top: 1rem;
@@ -74,9 +199,12 @@ body {
   margin: auto;
 }
 
-.about-window,
-.app-window {
+.about-window {
   width: min(360px, 100%);
+}
+
+.app-window {
+  width: min(420px, 100%);
 }
 
 .imgw-window {

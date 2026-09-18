@@ -13,6 +13,18 @@
   data-imgw-unavailable="{{imgw_unavailable}}"
   data-location-denied="{{location_denied}}"
   data-location-unavailable="{{location_unavailable}}"
+  data-forecast-unavailable="{{forecast_unavailable}}"
+  data-forecast-cities-unavailable="{{forecast_cities_unavailable}}"
+  data-forecast-nearest="{{forecast_nearest}}"
+  data-wmo-clear="{{wmo_clear}}"
+  data-wmo-partly="{{wmo_partly}}"
+  data-wmo-cloudy="{{wmo_cloudy}}"
+  data-wmo-fog="{{wmo_fog}}"
+  data-wmo-drizzle="{{wmo_drizzle}}"
+  data-wmo-rain="{{wmo_rain}}"
+  data-wmo-showers="{{wmo_showers}}"
+  data-wmo-snow="{{wmo_snow}}"
+  data-wmo-thunderstorm="{{wmo_thunderstorm}}"
   data-imgw-search-placeholder="{{imgw_search_placeholder}}"
   data-imgw-warning-search-placeholder="{{imgw_warning_search_placeholder}}"
   data-imgw-warning-source-meteo="{{imgw_warning_source_meteo}}"
@@ -41,6 +53,94 @@
     </div>
     <div class="window-body">
       <p class="language-switcher"><a href="/" lang="pl">PL</a> | <a href="/en/" lang="en">EN</a></p>
+      <fieldset class="forecast-panel" x-data="forecast">
+        <legend>{{forecast_legend}}</legend>
+        <div class="forecast-combo" x-ref="combo" @focusout="leave">
+          <label for="forecast-input">{{forecast_label}}</label>
+          <div class="forecast-search">
+            <input
+              id="forecast-input"
+              type="text"
+              role="combobox"
+              autocomplete="off"
+              spellcheck="false"
+              aria-autocomplete="list"
+              aria-controls="forecast-list"
+              :aria-expanded="list_visible ? 'true' : 'false'"
+              :aria-activedescendant="active_option"
+              placeholder="{{forecast_placeholder}}"
+              x-model="query"
+              @focus="focus_search"
+              @input="on_input"
+              @keydown="keydown"
+            />
+            <ul id="forecast-list" class="forecast-suggestions" role="listbox" x-show="list_visible" x-cloak>
+              <template x-for="(city, index) in suggestions" :key="city.name + index">
+                <li
+                  role="option"
+                  :id="`forecast-option-${index}`"
+                  :aria-selected="index === active_index ? 'true' : 'false'"
+                  :class="{ active: index === active_index }"
+                  x-text="city.name"
+                  @pointerdown.prevent="pick(city)"
+                  @pointerenter="active_index = index"
+                ></li>
+              </template>
+            </ul>
+          </div>
+          <p class="forecast-hint" x-show="no_results" x-cloak>{{forecast_no_results}}</p>
+        </div>
+        <div class="field-row forecast-actions">
+          <button type="button" :disabled="locating" @click="locate">{{forecast_locate}}</button>
+          <span class="imgw-status" x-show="locating" x-cloak>{{imgw_locating}}</span>
+        </div>
+        <div aria-live="polite">
+          <p class="imgw-status" x-show="loading" x-cloak>{{loading}}</p>
+          <p class="imgw-status" x-show="status" x-cloak x-text="status"></p>
+        </div>
+        <div class="forecast-result" x-show="place && data" x-cloak>
+          <h2 class="forecast-place" x-text="place?.label"></h2>
+          <template x-if="now">
+            <div>
+              <p class="forecast-now">
+                <span class="forecast-icon" role="img" :aria-label="now.text" x-text="now.icon"></span>
+                <strong x-text="now.temperature"></strong>
+                <span x-text="now.text"></span>
+              </p>
+              <dl class="forecast-facts">
+                <dt>{{forecast_feels_like}}</dt>
+                <dd x-text="now.apparent"></dd>
+                <dt>{{forecast_humidity}}</dt>
+                <dd x-text="now.humidity"></dd>
+                <dt>{{forecast_wind}}</dt>
+                <dd x-text="now.wind"></dd>
+                <dt>{{forecast_precipitation}}</dt>
+                <dd x-text="now.precipitation"></dd>
+              </dl>
+            </div>
+          </template>
+          <table class="forecast-days">
+            <thead>
+              <tr>
+                <th scope="col">{{forecast_col_day}}</th>
+                <th scope="col">{{forecast_col_weather}}</th>
+                <th scope="col">{{forecast_col_range}}</th>
+                <th scope="col">{{forecast_col_rain}}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="day in days" :key="day.date">
+                <tr>
+                  <td x-text="day.label"></td>
+                  <td><span role="img" :aria-label="day.text" :title="day.text" x-text="day.icon"></span></td>
+                  <td x-text="day.range"></td>
+                  <td x-text="day.chance"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </fieldset>
       <div class="imgw-panel" x-data="imgw" @keydown.escape.window="hide">
         <button
           type="button"
@@ -462,6 +562,7 @@
               <p class="about-attribution">{{about_source}}</p>
               <p class="about-attribution">{{about_processed}}</p>
               <p class="about-attribution">{{about_antistorm}} (<a href="https://antistorm.eu/" rel="noopener noreferrer">https://antistorm.eu/</a>).</p>
+              <p class="about-attribution">{{about_openmeteo}} (<a href="https://open-meteo.com/" rel="noopener noreferrer">https://open-meteo.com/</a>).</p>
               <fieldset class="memory-panel">
                 <legend>{{memory_title}}</legend>
                 <p class="memory-status" x-show="loading" x-cloak>{{loading}}</p>
