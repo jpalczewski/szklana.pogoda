@@ -11,6 +11,7 @@ const app_log = @import("app_log.zig");
 const metrics = @import("metrics.zig");
 const metrics_route = @import("routes/metrics.zig");
 const antistorm = @import("antistorm/mod.zig");
+const openmeteo = @import("openmeteo/mod.zig");
 const imgw = @import("imgw/mod.zig");
 const weather = @import("weather/mod.zig");
 const timestamps = @import("timestamps.zig");
@@ -33,6 +34,7 @@ const modules = .{
     metrics_route,
     storm,
     antistorm,
+    openmeteo,
     imgw,
     weather,
     http_fetch,
