@@ -199,25 +199,26 @@ fn copyHeaders(request: *http.Server.Request, allocator: std.mem.Allocator) std.
 }
 
 fn writeResponse(request: *http.Server.Request, response: router.Response) !void {
+    const unused: http.Header = .{ .name = "", .value = "" };
+    var headers = [_]http.Header{
+        .{ .name = "content-type", .value = response.content_type },
+        unused,
+        unused,
+    };
+    var count: usize = 1;
     if (response.allow) |allow| {
-        const headers = [_]http.Header{
-            .{ .name = "content-type", .value = response.content_type },
-            .{ .name = "allow", .value = allow },
-        };
-        try request.respond(response.body, .{
-            .status = response.status,
-            .keep_alive = false,
-            .extra_headers = &headers,
-        });
-        return;
+        headers[count] = .{ .name = "allow", .value = allow };
+        count += 1;
+    }
+    if (response.cache_control) |cache_control| {
+        headers[count] = .{ .name = "cache-control", .value = cache_control };
+        count += 1;
     }
 
     try request.respond(response.body, .{
         .status = response.status,
         .keep_alive = false,
-        .extra_headers = &.{
-            .{ .name = "content-type", .value = response.content_type },
-        },
+        .extra_headers = headers[0..count],
     });
 }
 
