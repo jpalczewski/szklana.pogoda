@@ -1,4 +1,6 @@
 document.addEventListener("alpine:init", () => {
+  Alpine.data("main_window", main_window);
+
   /* The about dialog owns the process figures it shows: opening it reads them
    * again, and a dialog left closed never asks the backend for them. */
   Alpine.data("about", () => {
@@ -461,6 +463,48 @@ function process_memory() {
     format_bytes(bytes) {
       if (typeof bytes !== "number") return "";
       return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+    },
+  };
+}
+
+/* The main window starts centred in normal document flow. The first drag lifts
+ * it out of flow at its current on-screen spot (no jump) and pins it with
+ * `left`/`top`, which it keeps afterwards; unlike the dialogs below it is not
+ * re-centred on every open, since it never closes. `left`/`top` are used
+ * instead of a transform so the window never becomes the containing block for
+ * its own nested dialogs' `position: fixed` backdrops. */
+function main_window() {
+  return {
+    position: null,
+    drag: null,
+
+    start_drag(event) {
+      if (event.button !== 0 || event.target.closest("button")) return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+
+      const rect = this.$refs.mainWindow.getBoundingClientRect();
+      if (!this.position) this.position = { left: rect.left, top: rect.top };
+      this.drag = {
+        pointer: event.pointerId,
+        grab: { x: event.clientX - this.position.left, y: event.clientY - this.position.top },
+        width: rect.width,
+      };
+    },
+
+    move_drag(event) {
+      if (event.pointerId !== this.drag?.pointer) return;
+      const { grab, width } = this.drag;
+      const edge = 24;
+      this.position = {
+        left: clamp(event.clientX - grab.x, edge - width, window.innerWidth - edge),
+        top: clamp(event.clientY - grab.y, 0, window.innerHeight - edge),
+      };
+    },
+
+    end_drag(event) {
+      if (event.pointerId !== this.drag?.pointer) return;
+      this.drag = null;
     },
   };
 }

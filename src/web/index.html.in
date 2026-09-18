@@ -24,8 +24,19 @@
   data-imgw-storm-just-now="{{imgw_storm_just_now}}"
   data-imgw-storm-unavailable="{{imgw_storm_unavailable}}"
 >
-  <div class="window app-window">
-    <div class="title-bar">
+  <div
+    class="window app-window"
+    x-data="main_window"
+    x-ref="mainWindow"
+    :style="position ? `position: fixed; left: ${position.left}px; top: ${position.top}px` : ''"
+  >
+    <div
+      class="title-bar"
+      @pointerdown="start_drag"
+      @pointermove="move_drag"
+      @pointerup="end_drag"
+      @pointercancel="end_drag"
+    >
       <div class="title-bar-text">{{page_title}}</div>
     </div>
     <div class="window-body">

@@ -8,10 +8,6 @@ body {
   padding: 4rem 1rem;
 }
 
-.app-window {
-  width: min(360px, 100%);
-}
-
 .language-switcher {
   margin: 0 0 1rem;
   text-align: right;
@@ -78,7 +74,8 @@ body {
   margin: auto;
 }
 
-.about-window {
+.about-window,
+.app-window {
   width: min(360px, 100%);
 }
 
@@ -86,8 +83,9 @@ body {
   width: min(560px, 100%);
 }
 
-/* The dialog is moved by dragging its title bar, so the browser must keep its
+/* The window is moved by dragging its title bar, so the browser must keep its
  * hands off text selection and touch scrolling there. */
+.app-window > .title-bar,
 .about-window .title-bar,
 .imgw-window .title-bar {
   touch-action: none;
