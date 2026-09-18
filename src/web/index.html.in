@@ -103,7 +103,7 @@
           <template x-if="now">
             <div>
               <p class="forecast-now">
-                <span class="forecast-icon" role="img" :aria-label="now.text" x-text="now.icon"></span>
+                <span class="forecast-icon" role="img" :aria-label="now.text" x-html="now.icon"></span>
                 <strong x-text="now.temperature"></strong>
                 <span x-text="now.text"></span>
               </p>
@@ -132,7 +132,7 @@
               <template x-for="day in days" :key="day.date">
                 <tr>
                   <td x-text="day.label"></td>
-                  <td><span role="img" :aria-label="day.text" :title="day.text" x-text="day.icon"></span></td>
+                  <td><span class="forecast-day-icon" role="img" :aria-label="day.text" :title="day.text" x-html="day.icon"></span></td>
                   <td x-text="day.range"></td>
                   <td x-text="day.chance"></td>
                 </tr>

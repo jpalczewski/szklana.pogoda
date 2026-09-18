@@ -121,9 +121,29 @@ body {
   font-size: 1.5rem;
 }
 
+/* The icons are 16 pixel grids: 48 and 32 px are whole multiples, so every
+ * pixel stays a crisp square. */
+.forecast-icon,
+.forecast-day-icon {
+  display: block;
+  flex: none;
+}
+
 .forecast-icon {
-  font-size: 2rem;
-  line-height: 1;
+  height: 48px;
+  width: 48px;
+}
+
+.forecast-day-icon {
+  height: 32px;
+  width: 32px;
+}
+
+.forecast-icon svg,
+.forecast-day-icon svg {
+  display: block;
+  height: 100%;
+  width: 100%;
 }
 
 .forecast-facts {
@@ -156,11 +176,6 @@ body {
 .forecast-days th:nth-child(n + 3),
 .forecast-days td:nth-child(n + 3) {
   text-align: right;
-}
-
-.forecast-days td [role="img"] {
-  font-size: 1.25rem;
-  line-height: 1;
 }
 
 .forecast-days tbody tr:nth-child(odd) {
