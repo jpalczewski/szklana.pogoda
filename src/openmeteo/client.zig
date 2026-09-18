@@ -127,9 +127,11 @@ pub const Client = struct {
     }
 
     /// Resolves the forecast for `latitude`/`longitude`, from the cache while
-    /// the grid cell's body is younger than `ttl_seconds`. The caller owns
-    /// the returned forecast and releases it with `Forecast.deinit`.
-    pub fn get(self: *Client, latitude: f64, longitude: f64) Error!Forecast {
+    /// the grid cell's body is younger than `ttl_seconds`. The forecast is
+    /// built with `allocator` (not `self.allocator`, which only backs the
+    /// cache), so the caller can release it with an allocator of its own —
+    /// a per-request arena, say — and releases it with `Forecast.deinit`.
+    pub fn get(self: *Client, allocator: std.mem.Allocator, latitude: f64, longitude: f64) Error!Forecast {
         try validateCoordinates(latitude, longitude);
         const key = gridKey(latitude, longitude);
 
@@ -139,7 +141,7 @@ pub const Client = struct {
         if (self.cachedBody(key, nowSeconds(self.io))) |cached| {
             self.mutex.unlock(self.io);
             defer self.allocator.free(cached.body);
-            var forecast = try parse(self.allocator, cached.body);
+            var forecast = try parse(allocator, cached.body);
             forecast.fetched_age_seconds = cached.age_seconds;
             return forecast;
         }
@@ -151,7 +153,7 @@ pub const Client = struct {
         defer self.allocator.free(body);
 
         self.remember(key, body, nowSeconds(self.io));
-        return parse(self.allocator, body);
+        return parse(allocator, body);
     }
 
     /// The request URL for one location. Every variable list here has to
@@ -426,9 +428,9 @@ test "coordinates outside range are rejected before any request" {
     client.fetch = &counting_fetch.fetch;
     defer client.deinit();
 
-    try std.testing.expectError(error.InvalidCoordinates, client.get(95, 21));
-    try std.testing.expectError(error.InvalidCoordinates, client.get(52, 200));
-    try std.testing.expectError(error.InvalidCoordinates, client.get(std.math.nan(f64), 21));
+    try std.testing.expectError(error.InvalidCoordinates, client.get(std.testing.allocator, 95, 21));
+    try std.testing.expectError(error.InvalidCoordinates, client.get(std.testing.allocator, 52, 200));
+    try std.testing.expectError(error.InvalidCoordinates, client.get(std.testing.allocator, std.math.nan(f64), 21));
     try std.testing.expectEqual(@as(usize, 0), counting_fetch.calls);
 }
 
@@ -438,7 +440,7 @@ test "a reading inside the TTL comes from the cache" {
     client.fetch = &counting_fetch.fetch;
     defer client.deinit();
 
-    const first = try client.get(52.2297, 21.0122);
+    const first = try client.get(std.testing.allocator, 52.2297, 21.0122);
     defer first.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), counting_fetch.calls);
     try std.testing.expectEqual(@as(u64, 0), first.fetched_age_seconds);
@@ -448,7 +450,7 @@ test "a reading inside the TTL comes from the cache" {
     );
 
     // A nearby coordinate in the same rounded grid cell hits the cache too.
-    const second = try client.get(52.2299, 21.0124);
+    const second = try client.get(std.testing.allocator, 52.2299, 21.0124);
     defer second.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), counting_fetch.calls);
     try std.testing.expectEqualStrings(first.current.time, second.current.time);
@@ -460,13 +462,13 @@ test "an entry older than the TTL is downloaded again" {
     client.fetch = &counting_fetch.fetch;
     defer client.deinit();
 
-    const first = try client.get(52.2297, 21.0122);
+    const first = try client.get(std.testing.allocator, 52.2297, 21.0122);
     defer first.deinit(std.testing.allocator);
 
     // Backdate the cached entry past the window.
     client.entries.items[0].fetched_at_seconds = nowSeconds(std.testing.io) - 901;
 
-    const second = try client.get(52.2297, 21.0122);
+    const second = try client.get(std.testing.allocator, 52.2297, 21.0122);
     defer second.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), counting_fetch.calls);
     try std.testing.expectEqual(@as(u64, 0), second.fetched_age_seconds);
@@ -478,11 +480,11 @@ test "a second reading of the same grid cell replaces the cached one" {
     client.fetch = &counting_fetch.fetch;
     defer client.deinit();
 
-    const first = try client.get(52.2297, 21.0122);
+    const first = try client.get(std.testing.allocator, 52.2297, 21.0122);
     first.deinit(std.testing.allocator);
     client.entries.items[0].fetched_at_seconds = 0;
 
-    const second = try client.get(52.2297, 21.0122);
+    const second = try client.get(std.testing.allocator, 52.2297, 21.0122);
     defer second.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), counting_fetch.calls);
     try std.testing.expectEqual(@as(usize, 1), client.entries.items.len);
