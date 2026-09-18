@@ -4,6 +4,7 @@ const Io = std.Io;
 const antistorm = @import("antistorm/mod.zig");
 const metrics = @import("metrics.zig");
 const weather = @import("weather/mod.zig");
+const openmeteo = @import("openmeteo/mod.zig");
 
 pub const App = struct {
     max_body_bytes: usize,
@@ -13,6 +14,9 @@ pub const App = struct {
     /// Antistorm readings; left null by tests that do not exercise the storm
     /// routes.
     storm: ?*antistorm.Client = null,
+    /// Open-Meteo forecasts; left null by tests that do not exercise the
+    /// forecast route.
+    forecast: ?*openmeteo.Client = null,
     /// Wall clock used by handlers that need "now"; left null by tests that
     /// do not exercise time dependent paths.
     io: ?Io = null,
@@ -29,6 +33,9 @@ pub const AppError = std.mem.Allocator.Error || error{
     StormUnavailable,
     /// The storm route was asked for a city that is not in the published table.
     UnknownCity,
+    /// The Open-Meteo endpoint could not be reached or answered with unusable
+    /// data.
+    ForecastUnavailable,
     PayloadTooLarge,
 };
 
@@ -171,6 +178,7 @@ pub fn errorResponse(allocator: std.mem.Allocator, path: []const u8, err: AppErr
         error.PayloadTooLarge => errorFor(allocator, path, .payload_too_large, .payload_too_large),
         error.UnknownCity => errorFor(allocator, path, .not_found, .city_not_found),
         error.StormUnavailable => errorFor(allocator, path, .bad_gateway, .storm_unavailable),
+        error.ForecastUnavailable => errorFor(allocator, path, .bad_gateway, .forecast_unavailable),
         error.MemoryStatisticsUnavailable, error.WeatherStoreUnavailable, error.OutOfMemory => errorFor(allocator, path, .internal_server_error, .internal_server_error),
     };
 }
@@ -195,6 +203,7 @@ fn methodNotAllowed(routes: []const Route, request: *RequestContext) Response {
 const ErrorMessage = enum {
     bad_request,
     city_not_found,
+    forecast_unavailable,
     internal_server_error,
     method_not_allowed,
     not_found,
@@ -205,6 +214,7 @@ const ErrorMessage = enum {
         return switch (self) {
             .bad_request => "Bad request",
             .city_not_found => "City not found",
+            .forecast_unavailable => "Forecast data unavailable",
             .internal_server_error => "Internal server error",
             .method_not_allowed => "Method not allowed",
             .not_found => "Not found",
@@ -217,6 +227,7 @@ const ErrorMessage = enum {
         return switch (self) {
             .bad_request => "bad request",
             .city_not_found => "city not found",
+            .forecast_unavailable => "forecast data unavailable",
             .internal_server_error => "internal server error",
             .method_not_allowed => "method not allowed",
             .not_found => "not found",
@@ -309,6 +320,13 @@ test "router maps storm failures onto 404 and 502" {
     defer std.testing.allocator.free(unavailable.body);
     try std.testing.expectEqual(http.Status.bad_gateway, unavailable.status);
     try std.testing.expectEqualStrings("{\"error\":\"Storm data unavailable\"}", unavailable.body);
+}
+
+test "router maps forecast failures onto 502" {
+    const unavailable = errorResponse(std.testing.allocator, "/api/forecast", error.ForecastUnavailable);
+    defer std.testing.allocator.free(unavailable.body);
+    try std.testing.expectEqual(http.Status.bad_gateway, unavailable.status);
+    try std.testing.expectEqualStrings("{\"error\":\"Forecast data unavailable\"}", unavailable.body);
 }
 
 test "limit is enforced while body is read" {
