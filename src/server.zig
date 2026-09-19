@@ -248,7 +248,7 @@ test "observation stays active until scope exit including error returns" {
             observation.begin();
             defer observation.end();
 
-            const active = try registry.render(std.testing.allocator);
+            const active = try registry.renderAlloc(std.testing.allocator);
             defer std.testing.allocator.free(active);
             try std.testing.expect(std.mem.find(u8, active, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 1\n") != null);
             if (fail) return error.TestRequestFailed;
@@ -263,10 +263,11 @@ test "observation stays active until scope exit including error returns" {
         } else {
             try exercise.run(&registry, fail);
         }
-        const ended = try registry.render(std.testing.allocator);
+        const ended = try registry.renderAlloc(std.testing.allocator);
         defer std.testing.allocator.free(ended);
         try std.testing.expect(std.mem.find(u8, ended, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 0\n") != null);
-        try std.testing.expectEqual(@as(usize, 0), registry.series.items.len);
+        // Only a finished request is counted; an observation that just ends is not.
+        try std.testing.expect(std.mem.find(u8, ended, "szklana_pogoda_http_requests_total{") == null);
     }
 }
 

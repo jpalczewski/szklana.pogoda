@@ -1,159 +1,96 @@
-const std = @import("std");
+//! Every metric the server exposes, declared once.
+//!
+//! `family.zig` holds the metric types; this file names each metric, gives it
+//! its labels and collects them in `Registry`. Adding a metric means adding a
+//! family type here and one field (with its `init`) to `Families`: `deinit` and
+//! `render` walk the fields, so neither needs to learn about it.
 
-const buckets = [_]struct { label: []const u8, nanoseconds: u64 }{
-    .{ .label = "0.005", .nanoseconds = 5 * std.time.ns_per_ms },
-    .{ .label = "0.01", .nanoseconds = 10 * std.time.ns_per_ms },
-    .{ .label = "0.025", .nanoseconds = 25 * std.time.ns_per_ms },
-    .{ .label = "0.05", .nanoseconds = 50 * std.time.ns_per_ms },
-    .{ .label = "0.1", .nanoseconds = 100 * std.time.ns_per_ms },
-    .{ .label = "0.25", .nanoseconds = 250 * std.time.ns_per_ms },
-    .{ .label = "0.5", .nanoseconds = 500 * std.time.ns_per_ms },
-    .{ .label = "1", .nanoseconds = std.time.ns_per_s },
-    .{ .label = "2.5", .nanoseconds = 2500 * std.time.ns_per_ms },
-    .{ .label = "5", .nanoseconds = 5 * std.time.ns_per_s },
-    .{ .label = "10", .nanoseconds = 10 * std.time.ns_per_s },
+const std = @import("std");
+const Io = std.Io;
+
+const family = @import("metrics/family.zig");
+
+const HttpRequestLabels = struct {
+    method: []const u8,
+    route: []const u8,
+    status: u16,
 };
 
+const HttpRouteLabels = struct {
+    method: []const u8,
+    route: []const u8,
+};
+
+const HttpRequests = family.Counter(
+    "szklana_pogoda_http_requests_total",
+    "Total completed HTTP requests.",
+    HttpRequestLabels,
+);
+
+const HttpInFlight = family.Gauge(
+    "szklana_pogoda_http_in_flight_requests",
+    "HTTP requests currently being handled.",
+    HttpRouteLabels,
+);
+
+const HttpDuration = family.Histogram(
+    "szklana_pogoda_http_request_duration_seconds",
+    "HTTP request duration in seconds.",
+    HttpRequestLabels,
+    &family.latency_bounds_ns,
+);
+
 pub const Registry = struct {
-    allocator: std.mem.Allocator,
-    mutex: std.atomic.Mutex = .unlocked,
-    in_flight: std.ArrayList(InFlight) = .empty,
-    series: std.ArrayList(Series) = .empty,
+    families: Families,
 
-    const InFlight = struct {
-        method: []const u8,
-        route: []const u8,
-        count: u64 = 0,
-    };
-
-    const Series = struct {
-        method: []const u8,
-        route: []const u8,
-        status: u16,
-        requests: u64 = 0,
-        duration_sum_ns: u64 = 0,
-        duration_buckets: [buckets.len]u64 = [_]u64{0} ** buckets.len,
+    /// Render order is field order.
+    const Families = struct {
+        http_requests: HttpRequests,
+        http_in_flight: HttpInFlight,
+        http_duration: HttpDuration,
     };
 
     pub fn init(allocator: std.mem.Allocator) Registry {
-        return .{ .allocator = allocator };
+        return .{ .families = .{
+            .http_requests = .init(allocator),
+            .http_in_flight = .init(allocator),
+            .http_duration = .init(allocator),
+        } };
     }
 
     pub fn deinit(self: *Registry) void {
-        self.in_flight.deinit(self.allocator);
-        self.series.deinit(self.allocator);
+        inline for (std.meta.fields(Families)) |field| @field(self.families, field.name).deinit();
         self.* = undefined;
     }
 
     pub fn begin(self: *Registry, method: []const u8, route: []const u8) void {
-        self.lock();
-        defer self.unlock();
-
-        const item = self.findOrCreateInFlight(method, route) catch return;
-        item.count +|= 1;
+        self.families.http_in_flight.inc(.{ .method = method, .route = route });
     }
 
     pub fn finish(self: *Registry, method: []const u8, route: []const u8, status: u16, duration_ns: u64) void {
-        self.lock();
-        defer self.unlock();
-
-        const item = self.findOrCreateSeries(method, route, status) catch return;
-        item.requests +|= 1;
-        item.duration_sum_ns +|= duration_ns;
-        for (buckets, 0..) |bucket, index| {
-            if (duration_ns <= bucket.nanoseconds) item.duration_buckets[index] +|= 1;
-        }
+        const labels: HttpRequestLabels = .{ .method = method, .route = route, .status = status };
+        self.families.http_requests.inc(labels);
+        self.families.http_duration.observe(labels, duration_ns);
     }
 
     pub fn end(self: *Registry, method: []const u8, route: []const u8) void {
-        self.lock();
-        defer self.unlock();
-
-        if (self.findInFlight(method, route)) |item| item.count -|= 1;
+        self.families.http_in_flight.dec(.{ .method = method, .route = route });
     }
 
-    pub fn render(self: *Registry, allocator: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
-        self.lock();
-        defer self.unlock();
-
-        var output: std.ArrayList(u8) = .empty;
-        errdefer output.deinit(allocator);
-
-        try output.appendSlice(
-            allocator,
-            "# HELP szklana_pogoda_http_requests_total Total completed HTTP requests.\n" ++
-                "# TYPE szklana_pogoda_http_requests_total counter\n",
-        );
-        for (self.series.items) |item| {
-            try appendLine(&output, allocator, "szklana_pogoda_http_requests_total{{method=\"{s}\",route=\"{s}\",status=\"{d}\"}} {d}\n", .{ item.method, item.route, item.status, item.requests });
-        }
-
-        try output.appendSlice(
-            allocator,
-            "# HELP szklana_pogoda_http_in_flight_requests HTTP requests currently being handled.\n" ++
-                "# TYPE szklana_pogoda_http_in_flight_requests gauge\n",
-        );
-        for (self.in_flight.items) |item| {
-            try appendLine(&output, allocator, "szklana_pogoda_http_in_flight_requests{{method=\"{s}\",route=\"{s}\"}} {d}\n", .{ item.method, item.route, item.count });
-        }
-
-        try output.appendSlice(
-            allocator,
-            "# HELP szklana_pogoda_http_request_duration_seconds HTTP request duration in seconds.\n" ++
-                "# TYPE szklana_pogoda_http_request_duration_seconds histogram\n",
-        );
-        for (self.series.items) |item| {
-            for (buckets, 0..) |bucket, index| {
-                try appendLine(&output, allocator, "szklana_pogoda_http_request_duration_seconds_bucket{{method=\"{s}\",route=\"{s}\",status=\"{d}\",le=\"{s}\"}} {d}\n", .{ item.method, item.route, item.status, bucket.label, item.duration_buckets[index] });
-            }
-            try appendLine(&output, allocator, "szklana_pogoda_http_request_duration_seconds_bucket{{method=\"{s}\",route=\"{s}\",status=\"{d}\",le=\"+Inf\"}} {d}\n", .{ item.method, item.route, item.status, item.requests });
-            const duration_seconds: f64 = @as(f64, @floatFromInt(item.duration_sum_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s));
-            try appendLine(&output, allocator, "szklana_pogoda_http_request_duration_seconds_sum{{method=\"{s}\",route=\"{s}\",status=\"{d}\"}} {d}\n", .{ item.method, item.route, item.status, duration_seconds });
-            try appendLine(&output, allocator, "szklana_pogoda_http_request_duration_seconds_count{{method=\"{s}\",route=\"{s}\",status=\"{d}\"}} {d}\n", .{ item.method, item.route, item.status, item.requests });
-        }
-
-        return try output.toOwnedSlice(allocator);
+    /// Writes every family in the Prometheus text format.
+    pub fn render(self: *Registry, writer: *Io.Writer) Io.Writer.Error!void {
+        inline for (std.meta.fields(Families)) |field| try @field(self.families, field.name).render(writer);
     }
 
-    fn findInFlight(self: *Registry, method: []const u8, route: []const u8) ?*InFlight {
-        for (self.in_flight.items) |*item| {
-            if (std.mem.eql(u8, item.method, method) and std.mem.eql(u8, item.route, route)) return item;
-        }
-        return null;
-    }
-
-    fn findOrCreateInFlight(self: *Registry, method: []const u8, route: []const u8) std.mem.Allocator.Error!*InFlight {
-        if (self.findInFlight(method, route)) |item| return item;
-        try self.in_flight.append(self.allocator, .{ .method = method, .route = route });
-        return &self.in_flight.items[self.in_flight.items.len - 1];
-    }
-
-    fn findOrCreateSeries(self: *Registry, method: []const u8, route: []const u8, status: u16) std.mem.Allocator.Error!*Series {
-        for (self.series.items) |*item| {
-            if (item.status == status and std.mem.eql(u8, item.method, method) and std.mem.eql(u8, item.route, route)) return item;
-        }
-        try self.series.append(self.allocator, .{ .method = method, .route = route, .status = status });
-        return &self.series.items[self.series.items.len - 1];
-    }
-
-    fn lock(self: *Registry) void {
-        while (!self.mutex.tryLock()) {}
-    }
-
-    fn unlock(self: *Registry) void {
-        self.mutex.unlock();
+    /// `render` into memory owned by the caller.
+    pub fn renderAlloc(self: *Registry, allocator: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
+        var output: Io.Writer.Allocating = .init(allocator);
+        defer output.deinit();
+        // An allocating writer fails only when it runs out of memory.
+        self.render(&output.writer) catch return error.OutOfMemory;
+        return output.toOwnedSlice();
     }
 };
-
-fn appendLine(output: *std.ArrayList(u8), allocator: std.mem.Allocator, comptime format: []const u8, args: anytype) std.mem.Allocator.Error!void {
-    // Every caller's route/method/status/bucket values are bounded well under
-    // this, so the only way to hit the error is a new caller widening the
-    // format past what fits; panicking says so instead of miscounting.
-    var buffer: [512]u8 = undefined;
-    const line = std.fmt.bufPrint(&buffer, format, args) catch |err|
-        std.debug.panic("metrics line exceeds {d} bytes ({t})", .{ buffer.len, err });
-    try output.appendSlice(allocator, line);
-}
 
 test "registry renders Prometheus counters and histogram" {
     var registry = Registry.init(std.testing.allocator);
@@ -163,11 +100,23 @@ test "registry renders Prometheus counters and histogram" {
     registry.finish("GET", "/", 200, 10 * std.time.ns_per_ms);
     registry.end("GET", "/");
 
-    const rendered = try registry.render(std.testing.allocator);
+    const rendered = try registry.renderAlloc(std.testing.allocator);
     defer std.testing.allocator.free(rendered);
     try std.testing.expect(std.mem.find(u8, rendered, "# TYPE szklana_pogoda_http_requests_total counter\n") != null);
     try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_http_requests_total{method=\"GET\",route=\"/\",status=\"200\"} 1\n") != null);
     try std.testing.expect(std.mem.find(u8, rendered, "le=\"0.005\"} 0\n") != null);
     try std.testing.expect(std.mem.find(u8, rendered, "le=\"0.01\"} 1\n") != null);
     try std.testing.expect(std.mem.find(u8, rendered, "le=\"+Inf\"} 1\n") != null);
+}
+
+test "registry keeps the in-flight gauge at zero after the request ends" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    registry.begin("GET", "/");
+    registry.end("GET", "/");
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 0\n") != null);
 }

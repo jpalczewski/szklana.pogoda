@@ -10,6 +10,7 @@ const storm = @import("routes/storm.zig");
 const forecast_route = @import("routes/forecast.zig");
 const app_log = @import("app_log.zig");
 const metrics = @import("metrics.zig");
+const metrics_family = @import("metrics/family.zig");
 const metrics_route = @import("routes/metrics.zig");
 const antistorm = @import("antistorm/mod.zig");
 const openmeteo = @import("openmeteo/mod.zig");
@@ -25,6 +26,7 @@ const http_fetch = @import("http_fetch.zig");
 const modules = .{
     app_log,
     metrics,
+    metrics_family,
     process_memory,
     router,
     server,
