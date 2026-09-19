@@ -155,6 +155,26 @@ const UpstreamDuration = family.Histogram(
     &family.slow_bounds_ns,
 );
 
+const no_labels = struct {};
+
+const ProcessResidentMemory = family.Gauge(
+    "process_resident_memory_bytes",
+    "Resident memory size of the process, in bytes.",
+    no_labels,
+);
+
+const ProcessVirtualMemory = family.Gauge(
+    "process_virtual_memory_bytes",
+    "Virtual memory size of the process, in bytes.",
+    no_labels,
+);
+
+const ProcessOwnMemory = family.Gauge(
+    "szklana_pogoda_process_own_memory_bytes",
+    "Memory the process owns, without the file-backed pages of its executable and libraries, in bytes.",
+    no_labels,
+);
+
 /// Measures a span on the monotonic clock, in nanoseconds, so that a request
 /// answered from memory does not read as zero.
 pub const Timer = struct {
@@ -186,6 +206,9 @@ pub const Registry = struct {
         cache_lookups: CacheLookups,
         upstream_requests: UpstreamRequests,
         upstream_duration: UpstreamDuration,
+        process_resident_memory: ProcessResidentMemory,
+        process_virtual_memory: ProcessVirtualMemory,
+        process_own_memory: ProcessOwnMemory,
     };
 
     pub fn init(allocator: std.mem.Allocator) Registry {
@@ -201,6 +224,9 @@ pub const Registry = struct {
             .cache_lookups = .init(allocator),
             .upstream_requests = .init(allocator),
             .upstream_duration = .init(allocator),
+            .process_resident_memory = .init(allocator),
+            .process_virtual_memory = .init(allocator),
+            .process_own_memory = .init(allocator),
         } };
     }
 
@@ -253,6 +279,14 @@ pub const Registry = struct {
     pub fn upstreamRequest(self: *Registry, upstream: Upstream, result: UpstreamResult, took_ns: u64) void {
         self.families.upstream_requests.inc(.{ .upstream = upstream, .result = result });
         self.families.upstream_duration.observe(.{ .upstream = upstream }, took_ns);
+    }
+
+    /// The process's memory as the kernel reports it now. Unlike the counters
+    /// this is not recorded as things happen; the scrape reads it and sets it.
+    pub fn setProcessMemory(self: *Registry, resident_bytes: u64, virtual_bytes: u64, own_bytes: u64) void {
+        self.families.process_resident_memory.set(.{}, resident_bytes);
+        self.families.process_virtual_memory.set(.{}, virtual_bytes);
+        self.families.process_own_memory.set(.{}, own_bytes);
     }
 
     /// Writes every family in the Prometheus text format.
@@ -361,4 +395,18 @@ test "registry records cache lookups and upstream requests" {
     }) |expected| {
         try std.testing.expect(std.mem.find(u8, rendered, expected) != null);
     }
+}
+
+test "registry renders the process memory gauges" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    registry.setProcessMemory(100, 300, 40);
+    registry.setProcessMemory(110, 300, 45);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "process_resident_memory_bytes 110\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "process_virtual_memory_bytes 300\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_process_own_memory_bytes 45\n") != null);
 }
