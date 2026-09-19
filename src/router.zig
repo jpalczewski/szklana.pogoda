@@ -160,6 +160,10 @@ pub const Route = struct {
     method: http.Method,
     path: []const u8,
     handler: Handler,
+    /// For a route that machines call all day (a healthcheck, a scrape): its
+    /// requests are neither counted in the HTTP metrics nor written to the
+    /// access log, except a failed one, which is logged.
+    quiet: bool = false,
 };
 
 pub fn dispatch(routes: []const Route, app: *App, request: *RequestContext) AppError!Response {

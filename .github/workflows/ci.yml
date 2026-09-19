@@ -88,7 +88,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # /api/memory needs no database or network access (see the Dockerfile's
+      # /healthz needs no database or network access (see the Dockerfile's
       # HEALTHCHECK), so this proves the binary starts and serves in the
       # final Alpine image without depending on upstream services.
       - name: Smoke-test image
@@ -96,7 +96,7 @@ jobs:
           image="$(head -n1 <<< "${TAGS}")"
           docker run --detach --name smoke "${image}"
           for _ in $(seq 1 30); do
-            if docker exec smoke wget -q -O /dev/null http://127.0.0.1:8080/api/memory; then
+            if docker exec smoke wget -q -O /dev/null http://127.0.0.1:8080/healthz; then
               exit 0
             fi
             sleep 1

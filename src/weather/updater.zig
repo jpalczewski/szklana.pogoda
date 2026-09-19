@@ -93,6 +93,15 @@ const warning_sources = [_]Source(warnings.Warning){
     .{ .label = "hydro warning", .fetch = &imgw.warnings.hydro.fetch, .deinit = &warnings.deinitWarnings, .record = &recordWarningBatch, .max_age_seconds = freshness.hydro_seconds },
 };
 
+/// Makes every source's series exist before its first poll ends. A source that
+/// never succeeds then reports a last success of 0 and counters at 0, which an
+/// alert can act on, instead of no series at all.
+pub fn declareMetrics(registry: *metrics.Registry) void {
+    for (measurement_sources) |source| registry.declarePollSource(source.label);
+    registry.declarePollSource(hydro_source.label);
+    for (warning_sources) |source| registry.declarePollSource(source.label);
+}
+
 /// `scratch` backs the temporary memory of a poll and nothing else: a poll
 /// downloads a few megabytes, decodes them and writes them to the store, and
 /// every byte of that is dead once the product is stored. `main` therefore
@@ -213,6 +222,12 @@ fn pollOnce(
         std.log.err("recording the IMGW {s} poll failed: {t}", .{ context.label, err });
         return .{ .result = .record_failed, .saved = saved };
     };
+    if (items.len == 0) {
+        // A healthy answer with nothing in it, which is normal for warnings and
+        // worth seeing in the log when it is the answer of every poll.
+        std.log.info("IMGW {s} has no records right now", .{context.label});
+        return .{ .result = .empty };
+    }
     std.log.info("IMGW {s} update saved {d}/{d}", .{ context.label, saved, items.len });
     return .{ .result = .saved, .saved = saved };
 }
@@ -427,11 +442,49 @@ test "polls are reported to the registry by source and result" {
     }
 }
 
+test "a poll that finds no records is reported as empty" {
+    const fetch = struct {
+        fn call(allocator: std.mem.Allocator, _: Io) imgw.Error![]model.Observation {
+            return allocator.alloc(model.Observation, 0) catch return error.OutOfMemory;
+        }
+    };
+
+    var store = try storage.Store.initMemory(std.testing.allocator);
+    defer store.deinit();
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const context: Context = .{ .store = &store, .label = test_source.label, .now_seconds = 1_000, .registry = &registry };
+
+    poll(model.Observation, test_source, &fetch.call, arena.allocator(), std.testing.io, context);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_total{source=\"synop\",result=\"empty\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "result=\"saved\"") == null);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_last_success_timestamp_seconds{source=\"synop\"} 1000\n") != null);
+}
+
 test "measurement source labels are known products" {
     // The label is written to every observation row and accepted as the
     // stations endpoints' `?source=` filter, so the polling table and the API
     // have to name the products the same way.
     for (measurement_sources) |source| {
         try std.testing.expect(model.isObservationSource(source.label));
+    }
+}
+
+test "every polled source has its series declared before the first poll" {
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    declareMetrics(&registry);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    for ([_][]const u8{ "synop", "meteo", "hydro", "meteo warning", "hydro warning" }) |label| {
+        var expected: [96]u8 = undefined;
+        const line = try std.fmt.bufPrint(&expected, "szklana_pogoda_poll_last_success_timestamp_seconds{{source=\"{s}\"}} 0\n", .{label});
+        try std.testing.expect(std.mem.find(u8, rendered, line) != null);
     }
 }
