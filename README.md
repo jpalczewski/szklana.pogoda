@@ -150,7 +150,7 @@ visitors and not probes.
 | `szklana_pogoda_http_in_flight_requests` | `method`, `route` | requests being handled now |
 | `szklana_pogoda_http_request_duration_seconds` | `method`, `route`, `status` | histogram, timed from the moment the request head is read |
 | `szklana_pogoda_http_head_errors_total` | `reason` | connections whose request head could not be read |
-| `szklana_pogoda_poll_total` | `source`, `result` | IMGW polls; `result` is `saved`, `fresh` (served from the store) or the stage that failed |
+| `szklana_pogoda_poll_total` | `source`, `result` | IMGW polls; `result` is `saved`, `empty` (the product answered with no records, as IMGW does for warnings while none is active), `fresh` (served from the store) or the stage that failed |
 | `szklana_pogoda_poll_duration_seconds` | `source` | histogram of the polls that went to the network |
 | `szklana_pogoda_poll_records_saved_total` | `source` | rows a poll wrote to the store |
 | `szklana_pogoda_poll_last_success_timestamp_seconds` | `source` | Unix time the last successful poll started |
@@ -162,8 +162,11 @@ visitors and not probes.
 `source` is the product label of the updater's source table: `synop`, `meteo`,
 `hydro`, `meteo warning` or `hydro warning`. A poll that failed reports the
 stage it failed at (`fetch_failed`, `convert_failed`, `save_failed` or
-`record_failed`), so an alert on a source that stopped updating can use
-`time() - szklana_pogoda_poll_last_success_timestamp_seconds`.
+`record_failed`). `saved` and `empty` both date the last success, so an alert on
+a source that stopped updating can use
+`time() - szklana_pogoda_poll_last_success_timestamp_seconds`; a source that
+answers `empty` on every poll for days is worth a panel of its own, because
+that is also what a dead endpoint that mimics IMGW's empty answer would look like.
 
 Every series with a known set of labels (each source's poll counters, the caches,
 the upstreams and the head errors) exists from startup at 0, and a source's last

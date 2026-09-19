@@ -222,6 +222,12 @@ fn pollOnce(
         std.log.err("recording the IMGW {s} poll failed: {t}", .{ context.label, err });
         return .{ .result = .record_failed, .saved = saved };
     };
+    if (items.len == 0) {
+        // A healthy answer with nothing in it, which is normal for warnings and
+        // worth seeing in the log when it is the answer of every poll.
+        std.log.info("IMGW {s} has no records right now", .{context.label});
+        return .{ .result = .empty };
+    }
     std.log.info("IMGW {s} update saved {d}/{d}", .{ context.label, saved, items.len });
     return .{ .result = .saved, .saved = saved };
 }
@@ -434,6 +440,30 @@ test "polls are reported to the registry by source and result" {
     }) |expected| {
         try std.testing.expect(std.mem.find(u8, rendered, expected) != null);
     }
+}
+
+test "a poll that finds no records is reported as empty" {
+    const fetch = struct {
+        fn call(allocator: std.mem.Allocator, _: Io) imgw.Error![]model.Observation {
+            return allocator.alloc(model.Observation, 0) catch return error.OutOfMemory;
+        }
+    };
+
+    var store = try storage.Store.initMemory(std.testing.allocator);
+    defer store.deinit();
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const context: Context = .{ .store = &store, .label = test_source.label, .now_seconds = 1_000, .registry = &registry };
+
+    poll(model.Observation, test_source, &fetch.call, arena.allocator(), std.testing.io, context);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_total{source=\"synop\",result=\"empty\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "result=\"saved\"") == null);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_last_success_timestamp_seconds{source=\"synop\"} 1000\n") != null);
 }
 
 test "measurement source labels are known products" {

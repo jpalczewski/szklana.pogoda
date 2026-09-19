@@ -51,10 +51,14 @@ const HttpHeadErrors = family.Counter(
 );
 
 /// How one poll of an IMGW product ended. `fresh` means nothing was
-/// downloaded because the stored rows were recent enough; every other result
-/// after `freshness_check_failed` is the stage at which a download failed.
+/// downloaded because the stored rows were recent enough; `empty` means the
+/// product answered but held no records (IMGW does that for warnings while none
+/// is active), which is a success that a dashboard can tell apart from `saved`;
+/// every other result after `freshness_check_failed` is the stage at which a
+/// download failed.
 pub const PollResult = enum {
     convert_failed,
+    empty,
     fetch_failed,
     fresh,
     freshness_check_failed,
@@ -301,7 +305,7 @@ pub const Registry = struct {
         }
         self.families.poll_duration.observe(.{ .source = source }, took_ns);
         if (saved > 0) self.families.poll_records_saved.add(.{ .source = source }, saved);
-        if (result == .saved) self.families.poll_last_success.set(.{ .source = source }, started_at);
+        if (result == .saved or result == .empty) self.families.poll_last_success.set(.{ .source = source }, started_at);
     }
 
     pub fn cacheLookup(self: *Registry, cache: Cache, result: CacheResult) void {
@@ -401,6 +405,19 @@ test "declared series render at zero and are not changed by recording" {
     }) |expected| {
         try std.testing.expect(std.mem.find(u8, rendered, expected) != null);
     }
+}
+
+test "an empty poll counts as a success and is told apart from a saved one" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    registry.poll("meteo warning", .empty, std.time.ns_per_s, 0, 1_000);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_total{source=\"meteo warning\",result=\"empty\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_last_success_timestamp_seconds{source=\"meteo warning\"} 1000\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "result=\"saved\"") == null);
 }
 
 test "a declared source that never succeeded reports a last success of zero" {
