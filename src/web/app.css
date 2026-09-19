@@ -162,24 +162,63 @@ body {
   text-align: right;
 }
 
-.forecast-days {
+/* 98.css tucks the panel flush under the tab strip, so the window body carries
+ * no extra gap of its own. */
+.forecast-tab-body {
+  margin: 0;
+  padding: 0.75rem;
+}
+
+.forecast-days,
+.forecast-hours {
   border-collapse: collapse;
   width: 100%;
 }
 
 .forecast-days th,
-.forecast-days td {
+.forecast-days td,
+.forecast-hours th,
+.forecast-hours td {
   padding: 2px 4px;
   text-align: left;
 }
 
 .forecast-days th:nth-child(n + 3),
-.forecast-days td:nth-child(n + 3) {
+.forecast-days td:nth-child(n + 3),
+.forecast-hours th:nth-child(n + 3),
+.forecast-hours td:nth-child(n + 3) {
   text-align: right;
 }
 
-.forecast-days tbody tr:nth-child(odd) {
+.forecast-days tbody tr:nth-child(odd),
+.forecast-hours tbody tr:nth-child(odd) {
   background: #f0f0f0;
+}
+
+/* Twenty-four rows would push the rest of the page far down, so the hours
+ * scroll inside the panel and their header stays in view. */
+.forecast-hours-scroll {
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
+.forecast-hours thead th {
+  background: #c0c0c0;
+  position: sticky;
+  top: 0;
+}
+
+.forecast-hours td {
+  vertical-align: middle;
+}
+
+.forecast-hours tr.day-start td {
+  border-top: 1px solid #808080;
+}
+
+.forecast-hour-day {
+  display: block;
+  font-weight: bold;
 }
 
 .about-panel,

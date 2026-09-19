@@ -3,12 +3,12 @@
 //! Unlike Antistorm, Open-Meteo needs no city table — any latitude/longitude
 //! is a valid request — so this module resolves nothing, it only fetches and
 //! caches. A `Forecast` (`model.zig`) owns several strings (the current
-//! reading's time, and each day's date, sunrise and sunset), so the cache
-//! keeps the downloaded JSON body rather than a decoded `Forecast`: a cache
-//! hit re-runs `parse` on a duplicated copy of the body, which is one
-//! `allocator.dupe` instead of a deep copy of the whole string tree. Readings
-//! are cached per grid cell for `ttl_seconds`, because the underlying
-//! forecast model does not change every request.
+//! reading's time, each day's date, sunrise and sunset, and each hour's
+//! time), so the cache keeps the downloaded JSON body rather than a decoded
+//! `Forecast`: a cache hit re-runs `parse` on a duplicated copy of the body,
+//! which is one `allocator.dupe` instead of a deep copy of the whole string
+//! tree. Readings are cached per grid cell for `ttl_seconds`, because the
+//! underlying forecast model does not change every request.
 //!
 //! The module is a pure client: it depends on the domain model and the
 //! shared transport (`http_fetch.zig`) and nothing else.
@@ -23,6 +23,7 @@ const model = @import("model.zig");
 pub const Forecast = model.Forecast;
 pub const Current = model.Current;
 pub const Day = model.Day;
+pub const Hour = model.Hour;
 
 pub const Error = std.mem.Allocator.Error || error{
     /// The endpoint answered with something that is not the documented shape.
@@ -37,6 +38,11 @@ pub const endpoint = "https://api.open-meteo.com/v1/forecast";
 
 /// Fixed for this first slice; not yet exposed as a client option.
 pub const forecast_days: u8 = 7;
+
+/// How many hourly readings follow, counted from the current hour. With
+/// `forecast_hours` Open-Meteo starts `hourly` at the current hour instead of
+/// at midnight, and it leaves `daily` at `forecast_days`.
+pub const forecast_hours: u8 = 24;
 
 /// How many grid cell readings stay cached.
 pub const cache_capacity: usize = 64;
@@ -63,9 +69,20 @@ const RawDaily = struct {
     sunset: []const []const u8,
 };
 
+const RawHourly = struct {
+    time: []const []const u8,
+    temperature_2m: []const f64,
+    /// Open-Meteo prints `null` for an hour it has no probability for.
+    precipitation_probability: []const ?f64,
+    precipitation: []const f64,
+    weather_code: []const f64,
+    wind_speed_10m: []const f64,
+    wind_direction_10m: []const f64,
+};
+
 /// The field names mirror Open-Meteo's JSON keys exactly, because `std.json`
 /// derives them from the struct fields. They must stay in sync with the
-/// `current=`/`daily=` variable lists `Client.urlFor` sends, since the API
+/// `current=`/`daily=`/`hourly=` variable lists `Client.urlFor` sends, since the API
 /// echoes back exactly the variables that were requested. Every number is
 /// decoded as `f64` regardless of how Open-Meteo happens to print it (some
 /// fields are documented as integers), and rounded down to its domain type
@@ -75,6 +92,7 @@ const Raw = struct {
     longitude: f64,
     current: ?RawCurrent = null,
     daily: ?RawDaily = null,
+    hourly: ?RawHourly = null,
 };
 
 /// Transport for one response body, injectable so tests never reach the
@@ -189,12 +207,12 @@ pub const Client = struct {
     }
 
     /// The request URL for one location. Every variable list here has to
-    /// match `RawCurrent`/`RawDaily`.
+    /// match `RawCurrent`/`RawDaily`/`RawHourly`.
     pub fn urlFor(self: *Client, latitude: f64, longitude: f64) Error![]u8 {
         return std.fmt.allocPrint(
             self.allocator,
-            "{s}?latitude={d:.4}&longitude={d:.4}&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,sunrise,sunset&timezone=Europe%2FWarsaw&forecast_days={d}",
-            .{ endpoint, latitude, longitude, forecast_days },
+            "{s}?latitude={d:.4}&longitude={d:.4}&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,sunrise,sunset&hourly=temperature_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_direction_10m&timezone=Europe%2FWarsaw&forecast_days={d}&forecast_hours={d}",
+            .{ endpoint, latitude, longitude, forecast_days, forecast_hours },
         );
     }
 
@@ -254,10 +272,11 @@ fn validateCoordinates(latitude: f64, longitude: f64) Error!void {
     if (longitude < -180 or longitude > 180) return error.InvalidCoordinates;
 }
 
-/// Decodes one Open-Meteo response. Both `current` and `daily` are required —
-/// this client always requests both — and every daily array has to agree with
-/// `daily.time` in length, so one truncated field cannot silently misalign a
-/// day's numbers with another day's dates.
+/// Decodes one Open-Meteo response. `current`, `daily` and `hourly` are all
+/// required — this client always requests them — and every daily and hourly
+/// array has to agree with its `time` array in length, so one truncated field
+/// cannot silently misalign a day's or an hour's numbers with another one's
+/// time.
 pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error!Forecast {
     var decoded = std.json.parseFromSlice(Raw, allocator, body, .{ .ignore_unknown_fields = true }) catch
         return error.InvalidData;
@@ -265,6 +284,7 @@ pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error!Forecast {
 
     const raw_current = decoded.value.current orelse return error.InvalidData;
     const raw_daily = decoded.value.daily orelse return error.InvalidData;
+    const raw_hourly = decoded.value.hourly orelse return error.InvalidData;
 
     const day_count = raw_daily.time.len;
     if (raw_daily.weather_code.len != day_count or
@@ -303,6 +323,12 @@ pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error!Forecast {
         };
     }
 
+    const hours = try parseHours(allocator, raw_hourly);
+    errdefer {
+        model.deinitHours(allocator, hours);
+        allocator.free(hours);
+    }
+
     return .{
         .latitude = decoded.value.latitude,
         .longitude = decoded.value.longitude,
@@ -317,7 +343,36 @@ pub fn parse(allocator: std.mem.Allocator, body: []const u8) Error!Forecast {
             .wind_direction_deg = clampDirection(raw_current.wind_direction_10m),
         },
         .daily = days,
+        .hourly = hours,
     };
+}
+
+fn parseHours(allocator: std.mem.Allocator, raw: RawHourly) Error![]Hour {
+    const hour_count = raw.time.len;
+    if (raw.temperature_2m.len != hour_count or
+        raw.precipitation_probability.len != hour_count or
+        raw.precipitation.len != hour_count or
+        raw.weather_code.len != hour_count or
+        raw.wind_speed_10m.len != hour_count or
+        raw.wind_direction_10m.len != hour_count) return error.InvalidData;
+
+    const hours = try allocator.alloc(Hour, hour_count);
+    errdefer allocator.free(hours);
+    var built: usize = 0;
+    errdefer model.deinitHours(allocator, hours[0..built]);
+
+    while (built < hour_count) : (built += 1) {
+        hours[built] = .{
+            .time = try allocator.dupe(u8, raw.time[built]),
+            .temperature_c = raw.temperature_2m[built],
+            .precipitation_chance_percent = if (raw.precipitation_probability[built]) |chance| clampPercent(chance) else null,
+            .precipitation_mm = raw.precipitation[built],
+            .weather_code = clampCode(raw.weather_code[built]),
+            .wind_speed_kmh = raw.wind_speed_10m[built],
+            .wind_direction_deg = clampDirection(raw.wind_direction_10m[built]),
+        };
+    }
+    return hours;
 }
 
 /// Open-Meteo publishes a WMO weather code, documented as 0-99; anything
@@ -352,9 +407,16 @@ fn httpFetch(allocator: std.mem.Allocator, io: Io, url: []const u8) Error![]u8 {
     return http_fetch.get(allocator, io, url);
 }
 
-const fixture_body =
-    \\{"latitude":52.25,"longitude":21.0,"current":{"time":"2026-09-18T14:00","temperature_2m":18.4,"apparent_temperature":17.9,"relative_humidity_2m":63,"precipitation":0.0,"weather_code":3,"wind_speed_10m":11.2,"wind_direction_10m":240},"daily":{"time":["2026-09-18","2026-09-19","2026-09-20"],"weather_code":[3,61,2],"temperature_2m_max":[19.5,17.0,20.1],"temperature_2m_min":[10.1,9.4,11.0],"precipitation_sum":[0.0,4.2,0.1],"precipitation_probability_max":[10,80,20],"sunrise":["2026-09-18T06:15","2026-09-19T06:17","2026-09-20T06:18"],"sunset":["2026-09-18T19:02","2026-09-19T19:00","2026-09-20T18:57"]}}
+/// The `hourly` member of a response, with the leading comma so it can follow
+/// a `daily` member. The middle hour has no probability.
+const hourly_json =
+    \\,"hourly":{"time":["2026-09-18T14:00","2026-09-18T15:00","2026-09-18T16:00"],"temperature_2m":[18.4,19.1,18.7],"precipitation_probability":[10,null,40],"precipitation":[0.0,0.0,0.3],"weather_code":[3,2,61],"wind_speed_10m":[11.2,12.0,9.5],"wind_direction_10m":[240,250,260]}
 ;
+
+const fixture_body =
+    \\{"latitude":52.25,"longitude":21.0,"current":{"time":"2026-09-18T14:00","temperature_2m":18.4,"apparent_temperature":17.9,"relative_humidity_2m":63,"precipitation":0.0,"weather_code":3,"wind_speed_10m":11.2,"wind_direction_10m":240},"daily":{"time":["2026-09-18","2026-09-19","2026-09-20"],"weather_code":[3,61,2],"temperature_2m_max":[19.5,17.0,20.1],"temperature_2m_min":[10.1,9.4,11.0],"precipitation_sum":[0.0,4.2,0.1],"precipitation_probability_max":[10,80,20],"sunrise":["2026-09-18T06:15","2026-09-19T06:17","2026-09-20T06:18"],"sunset":["2026-09-18T19:02","2026-09-19T19:00","2026-09-20T18:57"]}
+++ hourly_json ++
+    "}";
 
 test "parses the documented payload" {
     const forecast = try parse(std.testing.allocator, fixture_body);
@@ -380,6 +442,47 @@ test "parses the documented payload" {
     try std.testing.expectEqual(@as(u8, 80), forecast.daily[1].precipitation_chance_percent);
     try std.testing.expectEqualStrings("2026-09-19T06:17", forecast.daily[1].sunrise);
     try std.testing.expectEqualStrings("2026-09-19T19:00", forecast.daily[1].sunset);
+
+    try std.testing.expectEqual(@as(usize, 3), forecast.hourly.len);
+    try std.testing.expectEqualStrings("2026-09-18T14:00", forecast.hourly[0].time);
+    try std.testing.expectApproxEqAbs(@as(f64, 19.1), forecast.hourly[1].temperature_c, 0.0001);
+    try std.testing.expectEqual(@as(?u8, 10), forecast.hourly[0].precipitation_chance_percent);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.3), forecast.hourly[2].precipitation_mm, 0.0001);
+    try std.testing.expectEqual(@as(u8, 61), forecast.hourly[2].weather_code);
+    try std.testing.expectApproxEqAbs(@as(f64, 9.5), forecast.hourly[2].wind_speed_kmh, 0.0001);
+    try std.testing.expectEqual(@as(u16, 260), forecast.hourly[2].wind_direction_deg);
+}
+
+test "an hour without a probability decodes to null" {
+    const forecast = try parse(std.testing.allocator, fixture_body);
+    defer forecast.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(?u8, null), forecast.hourly[1].precipitation_chance_percent);
+}
+
+test "a payload without hourly is rejected" {
+    try std.testing.expectError(error.InvalidData, parse(std.testing.allocator,
+        \\{"latitude":52.25,"longitude":21.0,"current":{"time":"2026-09-18T14:00","temperature_2m":18.4,"apparent_temperature":17.9,"relative_humidity_2m":63,"precipitation":0.0,"weather_code":3,"wind_speed_10m":11.2,"wind_direction_10m":240},"daily":{"time":[],"weather_code":[],"temperature_2m_max":[],"temperature_2m_min":[],"precipitation_sum":[],"precipitation_probability_max":[],"sunrise":[],"sunset":[]}}
+    ));
+}
+
+test "mismatched hourly array lengths are rejected" {
+    const body =
+        \\{"latitude":52.25,"longitude":21.0,"current":{"time":"2026-09-18T14:00","temperature_2m":18.4,"apparent_temperature":17.9,"relative_humidity_2m":63,"precipitation":0.0,"weather_code":3,"wind_speed_10m":11.2,"wind_direction_10m":240},"daily":{"time":[],"weather_code":[],"temperature_2m_max":[],"temperature_2m_min":[],"precipitation_sum":[],"precipitation_probability_max":[],"sunrise":[],"sunset":[]},"hourly":{"time":["2026-09-18T14:00","2026-09-18T15:00"],"temperature_2m":[18.4],"precipitation_probability":[10,20],"precipitation":[0.0,0.0],"weather_code":[3,3],"wind_speed_10m":[11.2,12.0],"wind_direction_10m":[240,250]}}
+    ;
+    try std.testing.expectError(error.InvalidData, parse(std.testing.allocator, body));
+}
+
+test "an out of range hourly number is clamped instead of rejected" {
+    const body =
+        \\{"latitude":52.25,"longitude":21.0,"current":{"time":"2026-09-18T14:00","temperature_2m":18.4,"apparent_temperature":17.9,"relative_humidity_2m":63,"precipitation":0.0,"weather_code":3,"wind_speed_10m":11.2,"wind_direction_10m":240},"daily":{"time":[],"weather_code":[],"temperature_2m_max":[],"temperature_2m_min":[],"precipitation_sum":[],"precipitation_probability_max":[],"sunrise":[],"sunset":[]},"hourly":{"time":["2026-09-18T14:00"],"temperature_2m":[18.4],"precipitation_probability":[150],"precipitation":[0.0],"weather_code":[300],"wind_speed_10m":[11.2],"wind_direction_10m":[700]}}
+    ;
+    const forecast = try parse(std.testing.allocator, body);
+    defer forecast.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(?u8, 100), forecast.hourly[0].precipitation_chance_percent);
+    try std.testing.expectEqual(@as(u8, 255), forecast.hourly[0].weather_code);
+    try std.testing.expectEqual(@as(u16, 359), forecast.hourly[0].wind_direction_deg);
 }
 
 test "a payload missing current or daily is rejected" {
@@ -393,15 +496,17 @@ test "a payload missing current or daily is rejected" {
 
 test "mismatched daily array lengths are rejected" {
     const body =
-        \\{"latitude":52.25,"longitude":21.0,"current":{"time":"2026-09-18T14:00","temperature_2m":18.4,"apparent_temperature":17.9,"relative_humidity_2m":63,"precipitation":0.0,"weather_code":3,"wind_speed_10m":11.2,"wind_direction_10m":240},"daily":{"time":["2026-09-18","2026-09-19"],"weather_code":[3],"temperature_2m_max":[19.5,17.0],"temperature_2m_min":[10.1,9.4],"precipitation_sum":[0.0,4.2],"precipitation_probability_max":[10,80],"sunrise":["2026-09-18T06:15","2026-09-19T06:17"],"sunset":["2026-09-18T19:02","2026-09-19T19:00"]}}
-    ;
+        \\{"latitude":52.25,"longitude":21.0,"current":{"time":"2026-09-18T14:00","temperature_2m":18.4,"apparent_temperature":17.9,"relative_humidity_2m":63,"precipitation":0.0,"weather_code":3,"wind_speed_10m":11.2,"wind_direction_10m":240},"daily":{"time":["2026-09-18","2026-09-19"],"weather_code":[3],"temperature_2m_max":[19.5,17.0],"temperature_2m_min":[10.1,9.4],"precipitation_sum":[0.0,4.2],"precipitation_probability_max":[10,80],"sunrise":["2026-09-18T06:15","2026-09-19T06:17"],"sunset":["2026-09-18T19:02","2026-09-19T19:00"]}
+    ++ hourly_json ++
+        "}";
     try std.testing.expectError(error.InvalidData, parse(std.testing.allocator, body));
 }
 
 test "an out of range number is clamped instead of rejected" {
     const body =
-        \\{"latitude":52.25,"longitude":21.0,"current":{"time":"2026-09-18T14:00","temperature_2m":18.4,"apparent_temperature":17.9,"relative_humidity_2m":140,"precipitation":0.0,"weather_code":300,"wind_speed_10m":11.2,"wind_direction_10m":700},"daily":{"time":["2026-09-18"],"weather_code":[-5],"temperature_2m_max":[19.5],"temperature_2m_min":[10.1],"precipitation_sum":[0.0],"precipitation_probability_max":[150],"sunrise":["2026-09-18T06:15"],"sunset":["2026-09-18T19:02"]}}
-    ;
+        \\{"latitude":52.25,"longitude":21.0,"current":{"time":"2026-09-18T14:00","temperature_2m":18.4,"apparent_temperature":17.9,"relative_humidity_2m":140,"precipitation":0.0,"weather_code":300,"wind_speed_10m":11.2,"wind_direction_10m":700},"daily":{"time":["2026-09-18"],"weather_code":[-5],"temperature_2m_max":[19.5],"temperature_2m_min":[10.1],"precipitation_sum":[0.0],"precipitation_probability_max":[150],"sunrise":["2026-09-18T06:15"],"sunset":["2026-09-18T19:02"]}
+    ++ hourly_json ++
+        "}";
     const forecast = try parse(std.testing.allocator, body);
     defer forecast.deinit(std.testing.allocator);
 
@@ -418,7 +523,7 @@ test "urlFor builds the documented query" {
     const url = try client.urlFor(52.2297, 21.0122);
     defer std.testing.allocator.free(url);
     try std.testing.expectEqualStrings(
-        "https://api.open-meteo.com/v1/forecast?latitude=52.2297&longitude=21.0122&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,sunrise,sunset&timezone=Europe%2FWarsaw&forecast_days=7",
+        "https://api.open-meteo.com/v1/forecast?latitude=52.2297&longitude=21.0122&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,sunrise,sunset&hourly=temperature_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_direction_10m&timezone=Europe%2FWarsaw&forecast_days=7&forecast_hours=24",
         url,
     );
 }
@@ -477,7 +582,7 @@ test "a reading inside the TTL comes from the cache" {
     try std.testing.expectEqual(@as(usize, 1), counting_fetch.calls);
     try std.testing.expectEqual(@as(u64, 0), first.fetched_age_seconds);
     try std.testing.expectEqualStrings(
-        "https://api.open-meteo.com/v1/forecast?latitude=52.2297&longitude=21.0122&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,sunrise,sunset&timezone=Europe%2FWarsaw&forecast_days=7",
+        "https://api.open-meteo.com/v1/forecast?latitude=52.2297&longitude=21.0122&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,sunrise,sunset&hourly=temperature_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_direction_10m&timezone=Europe%2FWarsaw&forecast_days=7&forecast_hours=24",
         counting_fetch.url(),
     );
 

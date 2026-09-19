@@ -689,6 +689,9 @@ function forecast() {
     data: null,
     /* A slow answer for an earlier place must not replace a newer one. */
     request_id: 0,
+    /* The tab on show. It belongs to the panel, not to a place, so it survives
+     * picking another city. */
+    view: "now",
 
     init() {
       const remembered = this.recall();
@@ -848,6 +851,17 @@ function forecast() {
       });
     },
 
+    select_view(name) {
+      this.view = name;
+      this.$nextTick(() => this.$root.querySelector(`[data-view="${name}"]`)?.focus());
+    },
+
+    step_view(delta) {
+      const order = ["now", "days", "hours"];
+      const index = order.indexOf(this.view);
+      this.select_view(order[(index + delta + order.length) % order.length]);
+    },
+
     async show_place(place) {
       const id = ++this.request_id;
       this.place = place;
@@ -939,6 +953,32 @@ function forecast() {
         range: `${this.number(day.temperature_min_c, "°")} / ${this.number(day.temperature_max_c, "°")}`,
         chance: this.number(day.precipitation_chance_percent, "%"),
       }));
+    },
+
+    /* The next 24 hours, starting with the current one. `time` is the place's
+     * local wall clock, so the hour is read off the text instead of going
+     * through a `Date`, which would shift it into the browser's timezone. An
+     * hour that opens a new calendar day also carries that day's name. */
+    get hours() {
+      const day_format = new Intl.DateTimeFormat(document.documentElement.lang, {
+        weekday: "short",
+        day: "numeric",
+        month: "numeric",
+      });
+      return (this.data?.hourly ?? []).map((hour, index) => {
+        const label = hour.time.slice(11, 16);
+        const opens_day = index > 0 && label === "00:00";
+        const chance = hour.precipitation_chance_percent;
+        return {
+          time: hour.time,
+          label,
+          day: opens_day ? day_format.format(new Date(`${hour.time.slice(0, 10)}T12:00:00`)) : "",
+          ...this.describe(hour.weather_code),
+          temperature: this.number(hour.temperature_c, "°"),
+          rain: `${this.number(chance, "%")} · ${hour.precipitation_mm} mm`,
+          wind: `${this.number(hour.wind_speed_kmh, " km/h")} ${compassPoint(hour.wind_direction_deg)}`.trim(),
+        };
+      });
     },
   };
 }

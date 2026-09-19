@@ -31,14 +31,28 @@ pub const Day = struct {
     sunset: []const u8,
 };
 
+pub const Hour = struct {
+    /// Open-Meteo local time on the hour, e.g. `"2026-09-18T14:00"`.
+    time: []const u8,
+    temperature_c: f64,
+    /// Null when Open-Meteo has no probability for that hour.
+    precipitation_chance_percent: ?u8,
+    precipitation_mm: f64,
+    /// WMO weather code.
+    weather_code: u8,
+    wind_speed_kmh: f64,
+    wind_direction_deg: u16,
+};
+
 /// One location's forecast. `latitude`/`longitude` are the grid point
 /// Open-Meteo actually answered with, not necessarily the exact coordinates
-/// requested.
+/// requested. `hourly` covers the hours from the current one onwards.
 pub const Forecast = struct {
     latitude: f64,
     longitude: f64,
     current: Current,
     daily: []Day,
+    hourly: []Hour,
     /// Seconds since this reading was downloaded; zero for a fresh fetch.
     fetched_age_seconds: u64 = 0,
 
@@ -46,8 +60,16 @@ pub const Forecast = struct {
         allocator.free(self.current.time);
         deinitDays(allocator, self.daily);
         allocator.free(self.daily);
+        deinitHours(allocator, self.hourly);
+        allocator.free(self.hourly);
     }
 };
+
+/// Releases the strings of a decoded hour slice without releasing the slice
+/// itself, like `deinitDays`.
+pub fn deinitHours(allocator: std.mem.Allocator, hours: []const Hour) void {
+    for (hours) |hour| allocator.free(hour.time);
+}
 
 /// Releases the strings of a decoded day slice without releasing the slice
 /// itself, so a partially built batch can be cleaned up on error.
