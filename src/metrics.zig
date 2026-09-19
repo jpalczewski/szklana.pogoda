@@ -97,6 +97,64 @@ const PollLastSuccess = family.Gauge(
     PollSourceLabels,
 );
 
+/// The in-memory caches in front of an on-demand upstream.
+pub const Cache = enum {
+    forecast,
+    storm,
+};
+
+pub const CacheResult = enum {
+    hit,
+    miss,
+};
+
+/// The on-demand upstreams. IMGW is polled, so it reports as `PollResult`.
+pub const Upstream = enum {
+    antistorm,
+    openmeteo,
+};
+
+/// `network_error` is an endpoint that could not be reached or did not answer
+/// 200; `invalid_data` is one that answered with something unusable.
+pub const UpstreamResult = enum {
+    invalid_data,
+    network_error,
+    succeeded,
+};
+
+const CacheLabels = struct {
+    cache: Cache,
+    result: CacheResult,
+};
+
+const UpstreamLabels = struct {
+    upstream: Upstream,
+    result: UpstreamResult,
+};
+
+const UpstreamNameLabels = struct {
+    upstream: Upstream,
+};
+
+const CacheLookups = family.Counter(
+    "szklana_pogoda_cache_lookups_total",
+    "Lookups in an upstream response cache, by cache and whether they hit.",
+    CacheLabels,
+);
+
+const UpstreamRequests = family.Counter(
+    "szklana_pogoda_upstream_requests_total",
+    "Requests to an on-demand upstream, by upstream and how they ended.",
+    UpstreamLabels,
+);
+
+const UpstreamDuration = family.Histogram(
+    "szklana_pogoda_upstream_request_duration_seconds",
+    "Time spent downloading and decoding one upstream response, in seconds.",
+    UpstreamNameLabels,
+    &family.slow_bounds_ns,
+);
+
 /// Measures a span on the monotonic clock, in nanoseconds, so that a request
 /// answered from memory does not read as zero.
 pub const Timer = struct {
@@ -125,6 +183,9 @@ pub const Registry = struct {
         poll_duration: PollDuration,
         poll_records_saved: PollRecordsSaved,
         poll_last_success: PollLastSuccess,
+        cache_lookups: CacheLookups,
+        upstream_requests: UpstreamRequests,
+        upstream_duration: UpstreamDuration,
     };
 
     pub fn init(allocator: std.mem.Allocator) Registry {
@@ -137,6 +198,9 @@ pub const Registry = struct {
             .poll_duration = .init(allocator),
             .poll_records_saved = .init(allocator),
             .poll_last_success = .init(allocator),
+            .cache_lookups = .init(allocator),
+            .upstream_requests = .init(allocator),
+            .upstream_duration = .init(allocator),
         } };
     }
 
@@ -179,6 +243,16 @@ pub const Registry = struct {
         self.families.poll_duration.observe(.{ .source = source }, took_ns);
         if (saved > 0) self.families.poll_records_saved.add(.{ .source = source }, saved);
         if (result == .saved) self.families.poll_last_success.set(.{ .source = source }, started_at);
+    }
+
+    pub fn cacheLookup(self: *Registry, cache: Cache, result: CacheResult) void {
+        self.families.cache_lookups.inc(.{ .cache = cache, .result = result });
+    }
+
+    /// One request to `upstream` has ended after `took_ns`.
+    pub fn upstreamRequest(self: *Registry, upstream: Upstream, result: UpstreamResult, took_ns: u64) void {
+        self.families.upstream_requests.inc(.{ .upstream = upstream, .result = result });
+        self.families.upstream_duration.observe(.{ .upstream = upstream }, took_ns);
     }
 
     /// Writes every family in the Prometheus text format.
@@ -264,4 +338,27 @@ test "registry records a poll by source and result" {
     try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_duration_seconds_count{source=\"synop\"} 1\n") != null);
     try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_duration_seconds_count{source=\"hydro\"} 1\n") != null);
     try std.testing.expect(std.mem.find(u8, rendered, "last_success_timestamp_seconds{source=\"hydro\"}") == null);
+}
+
+test "registry records cache lookups and upstream requests" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    registry.cacheLookup(.storm, .miss);
+    registry.cacheLookup(.storm, .hit);
+    registry.cacheLookup(.storm, .hit);
+    registry.upstreamRequest(.antistorm, .succeeded, 200 * std.time.ns_per_ms);
+    registry.upstreamRequest(.openmeteo, .network_error, 5 * std.time.ns_per_s);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    for ([_][]const u8{
+        "szklana_pogoda_cache_lookups_total{cache=\"storm\",result=\"miss\"} 1\n",
+        "szklana_pogoda_cache_lookups_total{cache=\"storm\",result=\"hit\"} 2\n",
+        "szklana_pogoda_upstream_requests_total{upstream=\"antistorm\",result=\"succeeded\"} 1\n",
+        "szklana_pogoda_upstream_requests_total{upstream=\"openmeteo\",result=\"network_error\"} 1\n",
+        "szklana_pogoda_upstream_request_duration_seconds_count{upstream=\"openmeteo\"} 1\n",
+    }) |expected| {
+        try std.testing.expect(std.mem.find(u8, rendered, expected) != null);
+    }
 }

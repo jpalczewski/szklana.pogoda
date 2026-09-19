@@ -176,10 +176,14 @@ pub fn main(init: std.process.Init) !void {
     };
     var observations = try weather.Store.initFile(gpa, database_path, timestamps.clock().*);
     defer observations.deinit();
+    var metrics_registry = metrics.Registry.init(gpa);
+    defer metrics_registry.deinit();
     var storm_client = antistorm.Client.init(gpa, io, config.storm_cache_seconds);
     defer storm_client.deinit();
+    storm_client.metrics = &metrics_registry;
     var forecast_client = openmeteo.Client.init(gpa, io, config.forecast_cache_seconds);
     defer forecast_client.deinit();
+    forecast_client.metrics = &metrics_registry;
 
     var address = try net.IpAddress.parseIp4(config.host, config.port);
     var listener = try address.listen(io, .{ .reuse_address = true });
@@ -188,8 +192,6 @@ pub fn main(init: std.process.Init) !void {
     var metrics_listener = try metrics_address.listen(io, .{ .reuse_address = true });
     defer metrics_listener.deinit(io);
 
-    var metrics_registry = metrics.Registry.init(gpa);
-    defer metrics_registry.deinit();
     var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry, .weather_store = &observations, .storm = &storm_client, .forecast = &forecast_client, .io = io };
     var metrics_app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry };
     var connections: Io.Group = .init;
