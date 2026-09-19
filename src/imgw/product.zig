@@ -35,5 +35,12 @@ pub fn Product(
         pub fn fetch(allocator: std.mem.Allocator, io: Io) Error![]Item {
             return http.fetchParsed([]Item, allocator, io, endpoint, parse);
         }
+
+        /// `fetch` for a product IMGW answers with "no products" instead of an
+        /// empty array while it has nothing to publish, which is a normal
+        /// state for warnings and not a failure.
+        pub fn fetchOrEmpty(allocator: std.mem.Allocator, io: Io) Error![]Item {
+            return http.fetchParsedOrEmpty([]Item, allocator, io, endpoint, parse);
+        }
     };
 }

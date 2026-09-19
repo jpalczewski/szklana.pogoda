@@ -31,7 +31,7 @@ const Raw = struct {
 const source = product.Product(warnings.Warning, Raw, endpoint, parseRaw, warnings.deinitWarningItems, .{ .label = "meteo warning" });
 
 pub const parse = source.parse;
-pub const fetch = source.fetch;
+pub const fetch = source.fetchOrEmpty;
 
 fn parseRaw(allocator: std.mem.Allocator, raw: Raw) Error!warnings.Warning {
     const warning_id = try value.presentText(allocator, raw.id);
