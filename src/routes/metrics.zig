@@ -20,7 +20,7 @@ pub fn metrics(app: *router.App, request: *router.RequestContext) router.AppErro
 }
 
 test "a scrape renders the request metrics and the process memory" {
-    const metrics_module = @import("../metrics.zig");
+    const metrics_module = @import("../metrics/mod.zig");
     var registry = metrics_module.Registry.init(std.testing.allocator);
     defer registry.deinit();
     registry.begin("GET", "/");

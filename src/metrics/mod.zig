@@ -8,7 +8,7 @@
 const std = @import("std");
 const Io = std.Io;
 
-const family = @import("metrics/family.zig");
+const family = @import("family.zig");
 
 const HttpRequestLabels = struct {
     method: []const u8,

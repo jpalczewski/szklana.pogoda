@@ -2,7 +2,7 @@ const std = @import("std");
 const http = std.http;
 const Io = std.Io;
 const antistorm = @import("antistorm/mod.zig");
-const metrics = @import("metrics.zig");
+const metrics = @import("metrics/mod.zig");
 const weather = @import("weather/mod.zig");
 const openmeteo = @import("openmeteo/mod.zig");
 

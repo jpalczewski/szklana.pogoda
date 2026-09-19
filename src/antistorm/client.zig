@@ -16,7 +16,7 @@ const Io = std.Io;
 
 const cities = @import("cities.zig");
 const http_fetch = @import("../http_fetch.zig");
-const metrics = @import("../metrics.zig");
+const metrics = @import("../metrics/mod.zig");
 
 pub const Error = std.mem.Allocator.Error || error{
     /// The endpoint answered with something that is not the documented object.

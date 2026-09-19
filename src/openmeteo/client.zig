@@ -17,7 +17,7 @@ const std = @import("std");
 const Io = std.Io;
 
 const http_fetch = @import("../http_fetch.zig");
-const metrics = @import("../metrics.zig");
+const metrics = @import("../metrics/mod.zig");
 const model = @import("model.zig");
 
 pub const Forecast = model.Forecast;

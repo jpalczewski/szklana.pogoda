@@ -6,7 +6,7 @@ const model = @import("model.zig");
 const storage = @import("store.zig");
 const warnings = @import("../warnings.zig");
 const timestamps = @import("../timestamps.zig");
-const metrics = @import("../metrics.zig");
+const metrics = @import("../metrics/mod.zig");
 
 /// How long a successful poll keeps its product fresh, measured per source.
 /// Inside that window nothing is downloaded again: IMGW publishes measurements

@@ -4,7 +4,7 @@ const Io = std.Io;
 const net = Io.net;
 
 const app_log = @import("app_log.zig");
-const metrics = @import("metrics.zig");
+const metrics = @import("metrics/mod.zig");
 const router = @import("router.zig");
 
 pub const ListenerConfig = struct {
