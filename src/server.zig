@@ -6,6 +6,7 @@ const net = Io.net;
 const app_log = @import("app_log.zig");
 const metrics = @import("metrics/mod.zig");
 const router = @import("router.zig");
+const trusted_proxies = @import("trusted_proxies.zig");
 
 pub const ListenerConfig = struct {
     name: []const u8,
@@ -126,7 +127,7 @@ fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, confi
     const headers = try copyHeaders(&request, allocator);
     const content_length = request.head.content_length;
     const target_parts = router.splitTarget(target);
-    const client_ip = clientIp(config.app.trust_proxy, headers, peer_ip);
+    const client_ip = clientIp(config.app.trusted_proxies, stream.socket.address, headers, peer_ip);
     const route = matchRoute(config.routes, target_parts.path);
     const quiet = if (route) |matched| matched.quiet else false;
     const observation: Observation = .{
@@ -191,18 +192,31 @@ fn matchRoute(routes: []const router.Route, path: []const u8) ?router.Route {
     return null;
 }
 
-fn clientIp(trust_proxy: bool, headers: []const router.Header, peer_ip: []const u8) []const u8 {
-    if (!trust_proxy) return peer_ip;
+/// The address to attribute a request to. Forwarded headers are read only when
+/// the TCP peer is a listed proxy; otherwise the header is whatever the sender
+/// typed and the peer itself is the answer. Behind Cloudflare, `X-Forwarded-For`
+/// holds only the edge that reached the proxy, so `CF-Connecting-IP`, which
+/// Cloudflare sets to the visitor, is read first. A value that is not an IP
+/// address is skipped rather than logged.
+fn clientIp(proxies: trusted_proxies.TrustedProxies, peer: net.IpAddress, headers: []const router.Header, peer_ip: []const u8) []const u8 {
+    if (!proxies.contains(peer)) return peer_ip;
 
-    if (findHeader(headers, "x-forwarded-for")) |forwarded_for| {
-        const first = std.mem.trim(u8, forwarded_for[0..(std.mem.findScalar(u8, forwarded_for, ',') orelse forwarded_for.len)], " \t");
-        if (first.len != 0) return first;
+    if (findHeader(headers, "cf-connecting-ip")) |value| {
+        if (validAddress(value)) |address| return address;
     }
-    if (findHeader(headers, "x-real-ip")) |real_ip| {
-        const trimmed = std.mem.trim(u8, real_ip, " \t");
-        if (trimmed.len != 0) return trimmed;
+    if (findHeader(headers, "x-forwarded-for")) |value| {
+        if (validAddress(value[0..(std.mem.findScalar(u8, value, ',') orelse value.len)])) |address| return address;
+    }
+    if (findHeader(headers, "x-real-ip")) |value| {
+        if (validAddress(value)) |address| return address;
     }
     return peer_ip;
+}
+
+fn validAddress(value: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, value, " \t");
+    _ = net.IpAddress.parse(trimmed, 0) catch return null;
+    return trimmed;
 }
 
 fn findHeader(headers: []const router.Header, name: []const u8) ?[]const u8 {
@@ -345,19 +359,48 @@ test "an unreadable head is counted only on an instrumented listener" {
     try std.testing.expect(instrumentedRegistry(&scrape) == null);
 }
 
-test "client IP uses peer address unless proxy headers are trusted" {
-    const headers = [_]router.Header{
-        .{ .name = "X-Forwarded-For", .value = " 203.0.113.4, 198.51.100.7" },
-        .{ .name = "X-Real-IP", .value = "203.0.113.5" },
-    };
-    try std.testing.expectEqualStrings("192.0.2.10", clientIp(false, &headers, "192.0.2.10"));
-    try std.testing.expectEqualStrings("203.0.113.4", clientIp(true, &headers, "192.0.2.10"));
+fn testPeer(text: []const u8) !net.IpAddress {
+    return net.IpAddress.parse(text, 0);
 }
 
-test "client IP falls back from proxy headers to peer address" {
-    const real_ip_headers = [_]router.Header{.{ .name = "X-Real-IP", .value = " 203.0.113.5 " }};
-    try std.testing.expectEqualStrings("203.0.113.5", clientIp(true, &real_ip_headers, "192.0.2.10"));
-    try std.testing.expectEqualStrings("192.0.2.10", clientIp(true, &.{}, "192.0.2.10"));
+fn testProxies() !trusted_proxies.TrustedProxies {
+    return trusted_proxies.TrustedProxies.parse("172.18.0.0/16");
+}
+
+test "client IP is the peer address when the peer is not a trusted proxy" {
+    const headers = [_]router.Header{
+        .{ .name = "CF-Connecting-IP", .value = "203.0.113.9" },
+        .{ .name = "X-Forwarded-For", .value = "203.0.113.4" },
+    };
+    // A request sent straight to the origin can carry any header it likes.
+    try std.testing.expectEqualStrings("198.51.100.7", clientIp(try testProxies(), try testPeer("198.51.100.7"), &headers, "198.51.100.7"));
+    try std.testing.expectEqualStrings("172.18.0.6", clientIp(.{}, try testPeer("172.18.0.6"), &headers, "172.18.0.6"));
+}
+
+test "client IP prefers CF-Connecting-IP from a trusted proxy" {
+    const headers = [_]router.Header{
+        .{ .name = "X-Forwarded-For", .value = "162.158.1.1" },
+        .{ .name = "cf-connecting-ip", .value = " 203.0.113.9 " },
+    };
+    try std.testing.expectEqualStrings("203.0.113.9", clientIp(try testProxies(), try testPeer("172.18.0.6"), &headers, "172.18.0.6"));
+}
+
+test "client IP falls back from CF-Connecting-IP to the forwarded headers and the peer" {
+    const peer = try testPeer("172.18.0.6");
+    const forwarded = [_]router.Header{.{ .name = "X-Forwarded-For", .value = " 203.0.113.4, 198.51.100.7" }};
+    try std.testing.expectEqualStrings("203.0.113.4", clientIp(try testProxies(), peer, &forwarded, "172.18.0.6"));
+    const real_ip = [_]router.Header{.{ .name = "X-Real-IP", .value = " 203.0.113.5 " }};
+    try std.testing.expectEqualStrings("203.0.113.5", clientIp(try testProxies(), peer, &real_ip, "172.18.0.6"));
+    try std.testing.expectEqualStrings("172.18.0.6", clientIp(try testProxies(), peer, &.{}, "172.18.0.6"));
+}
+
+test "client IP skips a header that is not an address" {
+    const headers = [_]router.Header{
+        .{ .name = "CF-Connecting-IP", .value = "not-an-ip\",\"x\":1" },
+        .{ .name = "X-Forwarded-For", .value = "" },
+        .{ .name = "X-Real-IP", .value = "203.0.113.5" },
+    };
+    try std.testing.expectEqualStrings("203.0.113.5", clientIp(try testProxies(), try testPeer("172.18.0.6"), &headers, "172.18.0.6"));
 }
 
 test "peer address formatting omits TCP port" {

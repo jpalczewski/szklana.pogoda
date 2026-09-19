@@ -21,6 +21,7 @@ const timestamps = @import("timestamps.zig");
 const warnings = @import("warnings.zig");
 const process_memory = @import("process_memory.zig");
 const http_fetch = @import("http_fetch.zig");
+const trusted_proxies = @import("trusted_proxies.zig");
 
 /// Every module of the server, named once so the analysis below and the test
 /// collection at the end of this file cannot drift apart.
@@ -44,6 +45,7 @@ const modules = .{
     imgw,
     weather,
     http_fetch,
+    trusted_proxies,
 };
 
 /// Forces the semantic analyzer over every function of a module, so production
@@ -83,7 +85,7 @@ const Config = struct {
     metrics_port: u16 = 9090,
     max_body_bytes: usize = 16 * 1024,
     max_connections_per_cpu: usize = 4,
-    trust_proxy: bool = false,
+    trusted_proxies: trusted_proxies.TrustedProxies = .{},
     database_path: []const u8 = "weather.db",
     imgw_interval_seconds: u64 = 10 * 60,
     imgw_warnings_interval_seconds: u64 = 5 * 60,
@@ -97,13 +99,18 @@ const Config = struct {
     // The host borrows storage from environ, which must outlive this config.
     fn fromEnv(environ: *const std.process.Environ.Map) !Config {
         const defaults: Config = .{};
+        // TRUST_PROXY believed a forwarded header from any peer, which a
+        // request sent straight to the origin can forge, so it is gone.
+        if (environ.get("TRUST_PROXY") != null) {
+            std.log.warn("TRUST_PROXY is no longer read; list the proxies in TRUSTED_PROXIES to trust their forwarded headers", .{});
+        }
         const config: Config = .{
             .host = environ.get("HOST") orelse defaults.host,
             .port = try envInt(u16, environ, "PORT", defaults.port),
             .metrics_port = try envInt(u16, environ, "METRICS_PORT", defaults.metrics_port),
             .max_body_bytes = try envInt(usize, environ, "MAX_BODY_BYTES", defaults.max_body_bytes),
             .max_connections_per_cpu = try envInt(usize, environ, "MAX_CONNECTIONS_PER_CPU", defaults.max_connections_per_cpu),
-            .trust_proxy = try envBool(environ, "TRUST_PROXY", defaults.trust_proxy),
+            .trusted_proxies = try envProxies(environ, "TRUSTED_PROXIES", defaults.trusted_proxies),
             .database_path = environ.get("DATABASE_PATH") orelse defaults.database_path,
             .imgw_interval_seconds = try envInt(u64, environ, "IMGW_INTERVAL_SECONDS", defaults.imgw_interval_seconds),
             .imgw_warnings_interval_seconds = try envInt(u64, environ, "IMGW_WARNINGS_INTERVAL_SECONDS", defaults.imgw_warnings_interval_seconds),
@@ -198,8 +205,8 @@ pub fn main(init: std.process.Init) !void {
     var metrics_listener = try metrics_address.listen(io, .{ .reuse_address = true });
     defer metrics_listener.deinit(io);
 
-    var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry, .weather_store = &observations, .storm = &storm_client, .forecast = &forecast_client, .io = io };
-    var metrics_app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry };
+    var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trusted_proxies = config.trusted_proxies, .metrics = &metrics_registry, .weather_store = &observations, .storm = &storm_client, .forecast = &forecast_client, .io = io };
+    var metrics_app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trusted_proxies = config.trusted_proxies, .metrics = &metrics_registry };
     var connections: Io.Group = .init;
     defer connections.await(io) catch |err| std.log.warn("connections did not shut down cleanly: {t}", .{err});
     var listeners: Io.Group = .init;
@@ -241,12 +248,12 @@ fn envInt(comptime T: type, environ: *const std.process.Environ.Map, name: []con
     };
 }
 
-fn envBool(environ: *const std.process.Environ.Map, name: []const u8, default: bool) !bool {
+fn envProxies(environ: *const std.process.Environ.Map, name: []const u8, default: trusted_proxies.TrustedProxies) !trusted_proxies.TrustedProxies {
     const raw = environ.get(name) orelse return default;
-    if (std.ascii.eqlIgnoreCase(raw, "true")) return true;
-    if (std.ascii.eqlIgnoreCase(raw, "false")) return false;
-    std.log.err("invalid {s}=\"{s}\": expected true or false", .{ name, raw });
-    return error.InvalidBoolean;
+    return trusted_proxies.TrustedProxies.parse(raw) catch |err| {
+        std.log.err("invalid {s}=\"{s}\": {t}", .{ name, raw, err });
+        return err;
+    };
 }
 
 test "config uses defaults for an empty environment" {
@@ -266,7 +273,7 @@ test "config reads environment overrides" {
     try environ.put("METRICS_PORT", "19090");
     try environ.put("MAX_BODY_BYTES", "2048");
     try environ.put("MAX_CONNECTIONS_PER_CPU", "8");
-    try environ.put("TRUST_PROXY", "TrUe");
+    try environ.put("TRUSTED_PROXIES", "172.18.0.0/16, 10.0.0.1");
     try environ.put("DATABASE_PATH", "var/weather.db");
     try environ.put("IMGW_WARNINGS_INTERVAL_SECONDS", "120");
     try environ.put("STORM_CACHE_SECONDS", "60");
@@ -279,16 +286,13 @@ test "config reads environment overrides" {
         .metrics_port = 19090,
         .max_body_bytes = 2048,
         .max_connections_per_cpu = 8,
-        .trust_proxy = true,
+        .trusted_proxies = try trusted_proxies.TrustedProxies.parse("172.18.0.0/16,10.0.0.1"),
         .database_path = "var/weather.db",
         .imgw_warnings_interval_seconds = 120,
         .storm_cache_seconds = 60,
         .forecast_cache_seconds = 30,
     }, config);
     try std.testing.expectEqual(@as(usize, 26), try config.concurrentLimit(3));
-
-    try environ.put("TRUST_PROXY", "FALSE");
-    try std.testing.expect(!(try Config.fromEnv(&environ)).trust_proxy);
 }
 
 test "config rejects zero connections per CPU" {
