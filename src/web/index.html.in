@@ -4,6 +4,15 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{page_title}}</title>
+  <!--link-preview:start-->
+  <meta name="description" content="{{og_description}}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="{{page_title}}" />
+  <meta property="og:locale" content="{{og_locale}}" />
+  <meta property="og:title" content="{{page_title}}" />
+  <meta property="og:description" content="{{og_description}}" />
+  <meta name="twitter:card" content="summary" />
+  <!--link-preview:end-->
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v={{version:favicon.svg}}" />
   <link rel="stylesheet" href="/98.css?v={{version:98.css}}" />
   <link rel="stylesheet" href="/app.css?v={{version:app.css}}" />
