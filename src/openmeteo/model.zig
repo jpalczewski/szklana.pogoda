@@ -86,10 +86,10 @@ pub fn deinitDays(allocator: std.mem.Allocator, days: []const Day) void {
 /// `src/web/weather_icons.txt` and the `wmo_*` locale keys.
 pub const Condition = enum {
     clear,
-    partly,
     cloudy,
-    fog,
     drizzle,
+    fog,
+    partly,
     rain,
     showers,
     snow,

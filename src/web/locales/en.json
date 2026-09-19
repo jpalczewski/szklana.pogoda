@@ -1,6 +1,8 @@
 {
   "html_lang": "en",
   "page_title": "szklana.pogoda",
+  "og_description": "Weather for Polish cities: forecast, storms and warnings from IMGW data.",
+  "og_locale": "en_GB",
   "loading": "…",
   "http_error": "error: HTTP ",
   "memory_title": "Process memory",
