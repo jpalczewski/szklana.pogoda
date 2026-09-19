@@ -102,45 +102,133 @@
         </div>
         <div class="forecast-result" x-show="place && data" x-cloak>
           <h2 class="forecast-place" x-text="place?.label"></h2>
-          <template x-if="now">
-            <div>
-              <p class="forecast-now">
-                <span class="forecast-icon" role="img" :aria-label="now.text" x-html="now.icon"></span>
-                <strong x-text="now.temperature"></strong>
-                <span x-text="now.text"></span>
-              </p>
-              <dl class="forecast-facts">
-                <dt>{{forecast_feels_like}}</dt>
-                <dd x-text="now.apparent"></dd>
-                <dt>{{forecast_humidity}}</dt>
-                <dd x-text="now.humidity"></dd>
-                <dt>{{forecast_wind}}</dt>
-                <dd x-text="now.wind"></dd>
-                <dt>{{forecast_precipitation}}</dt>
-                <dd x-text="now.precipitation"></dd>
-              </dl>
-            </div>
-          </template>
-          <table class="forecast-days">
-            <thead>
-              <tr>
-                <th scope="col">{{forecast_col_day}}</th>
-                <th scope="col">{{forecast_col_weather}}</th>
-                <th scope="col">{{forecast_col_range}}</th>
-                <th scope="col">{{forecast_col_rain}}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <template x-for="day in days" :key="day.date">
+          <menu role="tablist" aria-label="{{forecast_tabs_label}}">
+            <li
+              role="tab"
+              id="forecast-tab-now"
+              data-view="now"
+              aria-controls="forecast-panel-now"
+              :aria-selected="view === 'now' ? 'true' : 'false'"
+              :tabindex="view === 'now' ? 0 : -1"
+              @click="select_view('now')"
+              @keydown.left.prevent="step_view(-1)"
+              @keydown.right.prevent="step_view(1)"
+            ><a href="#forecast-panel-now" @click.prevent>{{forecast_tab_now}}</a></li>
+            <li
+              role="tab"
+              id="forecast-tab-days"
+              data-view="days"
+              aria-controls="forecast-panel-days"
+              :aria-selected="view === 'days' ? 'true' : 'false'"
+              :tabindex="view === 'days' ? 0 : -1"
+              @click="select_view('days')"
+              @keydown.left.prevent="step_view(-1)"
+              @keydown.right.prevent="step_view(1)"
+            ><a href="#forecast-panel-days" @click.prevent>{{forecast_tab_days}}</a></li>
+            <li
+              role="tab"
+              id="forecast-tab-hours"
+              data-view="hours"
+              aria-controls="forecast-panel-hours"
+              :aria-selected="view === 'hours' ? 'true' : 'false'"
+              :tabindex="view === 'hours' ? 0 : -1"
+              @click="select_view('hours')"
+              @keydown.left.prevent="step_view(-1)"
+              @keydown.right.prevent="step_view(1)"
+            ><a href="#forecast-panel-hours" @click.prevent>{{forecast_tab_hours}}</a></li>
+          </menu>
+          <section
+            class="window forecast-tab-body"
+            id="forecast-panel-now"
+            role="tabpanel"
+            aria-labelledby="forecast-tab-now"
+            x-show="view === 'now'"
+          >
+            <template x-if="now">
+              <div>
+                <p class="forecast-now">
+                  <span class="forecast-icon" role="img" :aria-label="now.text" x-html="now.icon"></span>
+                  <strong x-text="now.temperature"></strong>
+                  <span x-text="now.text"></span>
+                </p>
+                <dl class="forecast-facts">
+                  <dt>{{forecast_feels_like}}</dt>
+                  <dd x-text="now.apparent"></dd>
+                  <dt>{{forecast_humidity}}</dt>
+                  <dd x-text="now.humidity"></dd>
+                  <dt>{{forecast_wind}}</dt>
+                  <dd x-text="now.wind"></dd>
+                  <dt>{{forecast_precipitation}}</dt>
+                  <dd x-text="now.precipitation"></dd>
+                </dl>
+              </div>
+            </template>
+          </section>
+          <section
+            class="window forecast-tab-body"
+            id="forecast-panel-days"
+            role="tabpanel"
+            aria-labelledby="forecast-tab-days"
+            x-show="view === 'days'"
+            x-cloak
+          >
+            <table class="forecast-days">
+              <thead>
                 <tr>
-                  <td x-text="day.label"></td>
-                  <td><span class="forecast-day-icon" role="img" :aria-label="day.text" :title="day.text" x-html="day.icon"></span></td>
-                  <td x-text="day.range"></td>
-                  <td x-text="day.chance"></td>
+                  <th scope="col">{{forecast_col_day}}</th>
+                  <th scope="col">{{forecast_col_weather}}</th>
+                  <th scope="col">{{forecast_col_range}}</th>
+                  <th scope="col">{{forecast_col_rain}}</th>
                 </tr>
-              </template>
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                <template x-for="day in days" :key="day.date">
+                  <tr>
+                    <td x-text="day.label"></td>
+                    <td><span class="forecast-day-icon" role="img" :aria-label="day.text" :title="day.text" x-html="day.icon"></span></td>
+                    <td x-text="day.range"></td>
+                    <td x-text="day.chance"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </section>
+          <section
+            class="window forecast-tab-body"
+            id="forecast-panel-hours"
+            role="tabpanel"
+            aria-labelledby="forecast-tab-hours"
+            x-show="view === 'hours'"
+            x-cloak
+          >
+            <div class="forecast-hours-scroll">
+              <table class="forecast-hours">
+                <thead>
+                  <tr>
+                    <th scope="col">{{forecast_col_hour}}</th>
+                    <th scope="col">{{forecast_col_weather}}</th>
+                    <th scope="col">{{forecast_col_temperature}}</th>
+                    <th scope="col">{{forecast_col_rain}}</th>
+                    <th scope="col">{{forecast_col_wind}}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="(hour, index) in hours" :key="index">
+                    <tr :class="{ 'day-start': hour.day }">
+                      <td>
+                        <span class="forecast-hour-day" x-show="hour.day" x-text="hour.day"></span>
+                        <span x-text="hour.label"></span>
+                      </td>
+                      <td><span class="forecast-day-icon" role="img" :aria-label="hour.text" :title="hour.text" x-html="hour.icon"></span></td>
+                      <td x-text="hour.temperature"></td>
+                      <td x-text="hour.rain"></td>
+                      <td x-text="hour.wind"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </section>
         </div>
       </fieldset>
       <div class="imgw-panel" x-data="imgw" @keydown.escape.window="hide">
