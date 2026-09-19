@@ -1,6 +1,8 @@
 {
   "html_lang": "pl",
   "page_title": "szklana.pogoda",
+  "og_description": "Pogoda dla polskich miast: prognoza, burze i ostrzeżenia na podstawie danych IMGW.",
+  "og_locale": "pl_PL",
   "loading": "…",
   "http_error": "błąd: HTTP ",
   "memory_title": "Pamięć procesu",

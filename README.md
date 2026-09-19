@@ -137,6 +137,23 @@ local time; an hour Open-Meteo has no rain probability for reports
 `precipitation_chance_percent: null`. The main page shows the forecast in three
 tabs: now, the seven days and those 24 hours.
 
+## Link previews
+
+A messenger draws a preview of a shared link from the page's `<meta>` tags, and
+its crawler does not run the page's script. `/` and `/en/` therefore answer a
+link that names a city, such as `/?city=Zakopane` (percent-encoded, `+` for a
+space and a lazy spelling like `lodz` all work), with that city's current
+weather in the tags: `og:title` reads `Zakopane: 18°C, pochmurno` and
+`og:description` the felt temperature, wind, chance of rain and the day's range.
+A city the table does not know, or a forecast that cannot be fetched, serves the
+page with its generic tags (or, for a known city without a forecast, its name);
+a link preview never makes the page fail. The page rewrites its own address to
+`?city=` when a city is picked by name, so copying the address shares that
+city; a position fix is never put there.
+
+The preview is text only, with no `og:image` (messengers do not draw SVG, and
+the server has no raster renderer yet).
+
 ## Metrics
 
 `GET /metrics` on `METRICS_PORT` answers in the Prometheus text format. Neither

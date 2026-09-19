@@ -669,6 +669,22 @@ const suggestion_limit = 8;
  * written to storage. */
 const last_place_key = "szklana.pogoda:last-place";
 
+/* Keeps the address bar naming the city on show, so copying it shares that
+ * city's forecast and the preview a messenger draws for it. Only a city picked
+ * by name goes there; a position fix never does, and neither does the nearest
+ * city it resolves to, so locating clears the name instead. */
+function show_city_in_address(name) {
+  try {
+    const url = new URL(location.href);
+    if (name) url.searchParams.set("city", name);
+    else url.searchParams.delete("city");
+    history.replaceState(history.state, "", url);
+  } catch {
+    /* The address is a convenience, like storage: a page that may not rewrite
+     * it works the same. */
+  }
+}
+
 /* The forecast panel on the main window. A city is found in the Antistorm list
  * the storm tab already uses, or as the closest entry of that list to the
  * browser's position; either way the forecast itself is requested by
@@ -694,10 +710,36 @@ function forecast() {
     view: "now",
 
     init() {
+      const named = new URLSearchParams(location.search).get("city");
+      if (named) {
+        this.open_named(named);
+        return;
+      }
+      this.open_remembered();
+    },
+
+    open_remembered() {
       const remembered = this.recall();
       if (!remembered) return;
       this.query = remembered.name;
       this.show_place(remembered);
+    },
+
+    /* A link that names a city (`?city=`) opens on it: that is the address a
+     * shared link preview points at, and the server has already drawn the
+     * preview from the same name. A name the list does not hold, or a list
+     * that cannot be fetched, leaves the page as it would be without one. The
+     * city is not remembered: opening someone's link is not choosing a place. */
+    async open_named(name) {
+      const cities = await this.load_cities();
+      const wanted = fold(name.trim());
+      const city = cities?.find((candidate) => candidate.search === wanted);
+      if (!city) {
+        this.open_remembered();
+        return;
+      }
+      this.query = city.name;
+      this.show_place({ name: city.name, label: city.name, latitude: city.latitude, longitude: city.longitude });
     },
 
     get needle() {
@@ -797,6 +839,7 @@ function forecast() {
       this.suggestions_open = false;
       const place = { name: city.name, label: city.name, latitude: city.latitude, longitude: city.longitude };
       this.remember(place);
+      show_city_in_address(city.name);
       this.show_place(place);
     },
 
@@ -842,6 +885,7 @@ function forecast() {
         if (km != null && (nearest === null || km < nearest.km)) nearest = { name: city.name, km };
       }
       this.query = "";
+      show_city_in_address(null);
       this.show_place({
         name: nearest?.name ?? `${here.latitude}, ${here.longitude}`,
         label: nearest
