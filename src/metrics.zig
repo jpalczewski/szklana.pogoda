@@ -40,6 +40,31 @@ const HttpDuration = family.Histogram(
     &family.latency_bounds_ns,
 );
 
+const HttpHeadErrorLabels = struct {
+    reason: []const u8,
+};
+
+const HttpHeadErrors = family.Counter(
+    "szklana_pogoda_http_head_errors_total",
+    "Connections whose request head could not be read, by error.",
+    HttpHeadErrorLabels,
+);
+
+/// Measures a span on the monotonic clock, in nanoseconds, so that a request
+/// answered from memory does not read as zero.
+pub const Timer = struct {
+    started_at: Io.Timestamp,
+
+    pub fn start(io: Io) Timer {
+        return .{ .started_at = Io.Clock.awake.now(io) };
+    }
+
+    pub fn elapsedNs(self: Timer, io: Io) u64 {
+        const elapsed = self.started_at.durationTo(Io.Clock.awake.now(io)).toNanoseconds();
+        return std.math.lossyCast(u64, elapsed);
+    }
+};
+
 pub const Registry = struct {
     families: Families,
 
@@ -48,6 +73,7 @@ pub const Registry = struct {
         http_requests: HttpRequests,
         http_in_flight: HttpInFlight,
         http_duration: HttpDuration,
+        http_head_errors: HttpHeadErrors,
     };
 
     pub fn init(allocator: std.mem.Allocator) Registry {
@@ -55,6 +81,7 @@ pub const Registry = struct {
             .http_requests = .init(allocator),
             .http_in_flight = .init(allocator),
             .http_duration = .init(allocator),
+            .http_head_errors = .init(allocator),
         } };
     }
 
@@ -75,6 +102,12 @@ pub const Registry = struct {
 
     pub fn end(self: *Registry, method: []const u8, route: []const u8) void {
         self.families.http_in_flight.dec(.{ .method = method, .route = route });
+    }
+
+    /// A connection whose request head was unreadable, so it never became a
+    /// request with a route to count. `reason` is an error name.
+    pub fn headError(self: *Registry, reason: []const u8) void {
+        self.families.http_head_errors.inc(.{ .reason = reason });
     }
 
     /// Writes every family in the Prometheus text format.
@@ -119,4 +152,24 @@ test "registry keeps the in-flight gauge at zero after the request ends" {
     const rendered = try registry.renderAlloc(std.testing.allocator);
     defer std.testing.allocator.free(rendered);
     try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 0\n") != null);
+}
+
+test "registry counts unreadable request heads by reason" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    registry.headError("HttpHeadersInvalid");
+    registry.headError("HttpHeadersInvalid");
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_http_head_errors_total{reason=\"HttpHeadersInvalid\"} 2\n") != null);
+}
+
+test "timer never runs backwards" {
+    const timer: Timer = .start(std.testing.io);
+    const first = timer.elapsedNs(std.testing.io);
+    const second = timer.elapsedNs(std.testing.io);
+    try std.testing.expect(second >= first);
+    try std.testing.expect(second < std.time.ns_per_s);
 }
