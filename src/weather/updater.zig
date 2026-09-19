@@ -6,6 +6,7 @@ const model = @import("model.zig");
 const storage = @import("store.zig");
 const warnings = @import("../warnings.zig");
 const timestamps = @import("../timestamps.zig");
+const metrics = @import("../metrics/mod.zig");
 
 /// How long a successful poll keeps its product fresh, measured per source.
 /// Inside that window nothing is downloaded again: IMGW publishes measurements
@@ -28,13 +29,15 @@ const freshness = struct {
 };
 
 /// What one poll pass hands to a source: the store being written, the product
-/// label used in the log lines, the wall-clock reading the warning sources
-/// stamp their rows with and the epoch that dates a successful poll.
+/// label used in the log lines and as the metric's `source`, the wall-clock
+/// reading the warning sources stamp their rows with, the epoch that dates a
+/// successful poll and the registry the poll reports to, if any.
 const Context = struct {
     store: *storage.Store,
     label: []const u8,
     seen_at: []const u8 = "",
     now_seconds: u64 = 0,
+    registry: ?*metrics.Registry = null,
 };
 
 /// One IMGW product wired for polling: how to fetch a batch, how to release it,
@@ -96,26 +99,26 @@ const warning_sources = [_]Source(warnings.Warning){
 /// passes `std.heap.page_allocator` so the pages go back to the kernel instead
 /// of staying mapped, empty and dirty inside the process allocator until it
 /// exits.
-pub fn run(scratch: std.mem.Allocator, io: Io, store: *storage.Store, interval_seconds: u64) void {
+pub fn run(scratch: std.mem.Allocator, io: Io, store: *storage.Store, registry: ?*metrics.Registry, interval_seconds: u64) void {
     while (true) {
         for (measurement_sources) |source| {
-            poll(model.Observation, source, source.fetch, scratch, io, .{ .store = store, .label = source.label, .now_seconds = nowSeconds(io) });
+            poll(model.Observation, source, source.fetch, scratch, io, .{ .store = store, .label = source.label, .now_seconds = nowSeconds(io), .registry = registry });
         }
-        poll(model.HydroObservation, hydro_source, hydro_source.fetch, scratch, io, .{ .store = store, .label = hydro_source.label, .now_seconds = nowSeconds(io) });
+        poll(model.HydroObservation, hydro_source, hydro_source.fetch, scratch, io, .{ .store = store, .label = hydro_source.label, .now_seconds = nowSeconds(io), .registry = registry });
         sleep(io, interval_seconds) catch return;
     }
 }
 
 /// The warnings run on their own cadence; `scratch` has the same meaning as in
 /// `run`.
-pub fn runWarnings(scratch: std.mem.Allocator, io: Io, store: *storage.Store, interval_seconds: u64) void {
+pub fn runWarnings(scratch: std.mem.Allocator, io: Io, store: *storage.Store, registry: ?*metrics.Registry, interval_seconds: u64) void {
     while (true) {
-        updateWarnings(scratch, io, store);
+        updateWarnings(scratch, io, store, registry);
         sleep(io, interval_seconds) catch return;
     }
 }
 
-fn updateWarnings(scratch: std.mem.Allocator, io: Io, store: *storage.Store) void {
+fn updateWarnings(scratch: std.mem.Allocator, io: Io, store: *storage.Store, registry: ?*metrics.Registry) void {
     const now_seconds = nowSeconds(io);
     const seen_at = timestamps.clock().localNow(scratch, io) catch |err| {
         std.log.err("reading the wall clock failed: {t}", .{err});
@@ -124,9 +127,33 @@ fn updateWarnings(scratch: std.mem.Allocator, io: Io, store: *storage.Store) voi
     defer scratch.free(seen_at);
 
     for (warning_sources) |source| {
-        poll(warnings.Warning, source, source.fetch, scratch, io, .{ .store = store, .label = source.label, .seen_at = seen_at, .now_seconds = now_seconds });
+        poll(warnings.Warning, source, source.fetch, scratch, io, .{ .store = store, .label = source.label, .seen_at = seen_at, .now_seconds = now_seconds, .registry = registry });
     }
 }
+
+/// One poll of one product, timed and reported to the registry. What the poll
+/// does, and what it logs, is `pollOnce`; this only measures it, so a stage
+/// added there needs a `metrics.PollResult` and nothing else.
+fn poll(
+    comptime Item: type,
+    source: Source(Item),
+    fetch: *const fn (std.mem.Allocator, Io) imgw.Error![]Item,
+    scratch: std.mem.Allocator,
+    io: Io,
+    context: Context,
+) void {
+    const timer: metrics.Timer = .start(io);
+    const polled = pollOnce(Item, source, fetch, scratch, io, context);
+    if (context.registry) |registry| {
+        registry.poll(source.label, polled.result, timer.elapsedNs(io), polled.saved, context.now_seconds);
+    }
+}
+
+/// How one poll ended and how many rows it wrote before that.
+const Polled = struct {
+    result: metrics.PollResult,
+    saved: usize = 0,
+};
 
 /// One poll of one product: reuse, fetch, store, report. Each source is stored
 /// independently so one failing endpoint does not hide the others.
@@ -141,23 +168,23 @@ fn updateWarnings(scratch: std.mem.Allocator, io: Io, store: *storage.Store) voi
 /// body and the items built from it are large, short-lived and independent of
 /// each other, so a general-purpose allocator keeps their pages mapped long
 /// after they are freed, while an arena hands them back in one step.
-fn poll(
+fn pollOnce(
     comptime Item: type,
     source: Source(Item),
     fetch: *const fn (std.mem.Allocator, Io) imgw.Error![]Item,
     scratch: std.mem.Allocator,
     io: Io,
     context: Context,
-) void {
+) Polled {
     const fresh = context.store.isFresh(source.label, context.now_seconds, source.max_age_seconds) catch |err| {
         // A store that cannot answer has to answer conservatively: update
         // rather than serve data of unknown age.
         std.log.err("checking the freshness of IMGW {s} failed: {t}", .{ context.label, err });
-        return;
+        return .{ .result = .freshness_check_failed };
     };
     if (fresh) {
         std.log.info("IMGW {s} is fresh, skipping the download", .{context.label});
-        return;
+        return .{ .result = .fresh };
     }
 
     var arena: std.heap.ArenaAllocator = .init(scratch);
@@ -166,27 +193,28 @@ fn poll(
 
     const items = fetch(work, io) catch |err| {
         std.log.err("IMGW {s} fetch failed: {t}", .{ context.label, err });
-        return;
+        return .{ .result = .fetch_failed };
     };
     defer source.deinit(work, items);
 
     if (source.fromWarsaw) |convert| {
         convert(work, items, context) catch |err| {
             std.log.err("rewriting IMGW {s} timestamps failed: {t}", .{ context.label, err });
-            return;
+            return .{ .result = .convert_failed };
         };
     }
 
     const saved = source.record(items, context) catch |err| {
         std.log.err("saving IMGW {s} failed: {t}", .{ context.label, err });
-        return;
+        return .{ .result = .save_failed };
     };
     context.store.releaseMemory();
     context.store.recordPoll(source.label, context.now_seconds) catch |err| {
         std.log.err("recording the IMGW {s} poll failed: {t}", .{ context.label, err });
-        return;
+        return .{ .result = .record_failed, .saved = saved };
     };
     std.log.info("IMGW {s} update saved {d}/{d}", .{ context.label, saved, items.len });
+    return .{ .result = .saved, .saved = saved };
 }
 
 /// A failing row is logged and skipped so a single bad station does not discard
@@ -360,6 +388,43 @@ test "a source is polled again in the next cycle" {
     poll(model.Observation, test_source, &fetch.call, allocator, std.testing.io, stale);
     try std.testing.expectEqual(@as(usize, 2), fetch.calls.calls);
     try std.testing.expect(try store.isFresh(test_source.label, stale.now_seconds, test_source.max_age_seconds));
+}
+
+test "polls are reported to the registry by source and result" {
+    const fetch = struct {
+        fn call(allocator: std.mem.Allocator, io: Io) imgw.Error![]model.Observation {
+            return countingFetch(&calls, allocator, io);
+        }
+        var calls: FetchCalls = .{};
+    };
+
+    var store = try storage.Store.initMemory(std.testing.allocator);
+    defer store.deinit();
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const first: Context = .{ .store = &store, .label = test_source.label, .now_seconds = 1_000, .registry = &registry };
+
+    poll(model.Observation, test_source, &fetch.call, allocator, std.testing.io, first);
+    poll(model.Observation, test_source, &fetch.call, allocator, std.testing.io, first);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    for ([_][]const u8{
+        "szklana_pogoda_poll_total{source=\"synop\",result=\"saved\"} 1\n",
+        "szklana_pogoda_poll_total{source=\"synop\",result=\"fresh\"} 1\n",
+        "szklana_pogoda_poll_records_saved_total{source=\"synop\"} 1\n",
+        "szklana_pogoda_poll_last_success_timestamp_seconds{source=\"synop\"} 1000\n",
+        // Only the saved poll downloaded; the fresh one did not. A failing
+        // fetch is not exercised here because it logs at error level, which
+        // fails a test; `Registry.poll` covers its result.
+        "szklana_pogoda_poll_duration_seconds_count{source=\"synop\"} 1\n",
+    }) |expected| {
+        try std.testing.expect(std.mem.find(u8, rendered, expected) != null);
+    }
 }
 
 test "measurement source labels are known products" {

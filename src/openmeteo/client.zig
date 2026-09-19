@@ -17,6 +17,7 @@ const std = @import("std");
 const Io = std.Io;
 
 const http_fetch = @import("../http_fetch.zig");
+const metrics = @import("../metrics/mod.zig");
 const model = @import("model.zig");
 
 pub const Forecast = model.Forecast;
@@ -113,6 +114,8 @@ pub const Client = struct {
     /// How long one grid cell's body is reused, in seconds.
     ttl_seconds: u64,
     fetch: Fetch = &httpFetch,
+    /// Where lookups and downloads are reported; null reports nothing.
+    metrics: ?*metrics.Registry = null,
     mutex: Io.Mutex = .init,
     entries: std.ArrayList(Entry) = .empty,
 
@@ -140,20 +143,49 @@ pub const Client = struct {
         self.mutex.lockUncancelable(self.io);
         if (self.cachedBody(key, nowSeconds(self.io))) |cached| {
             self.mutex.unlock(self.io);
+            self.reportCache(.hit);
             defer self.allocator.free(cached.body);
             var forecast = try parse(allocator, cached.body);
             forecast.fetched_age_seconds = cached.age_seconds;
             return forecast;
         }
         self.mutex.unlock(self.io);
+        self.reportCache(.miss);
 
         const url = try self.urlFor(latitude, longitude);
         defer self.allocator.free(url);
-        const body = try self.fetch(self.allocator, self.io, url);
+        const timer: metrics.Timer = .start(self.io);
+        const body = self.fetch(self.allocator, self.io, url) catch |err| {
+            self.reportFailure(timer, err);
+            return err;
+        };
         defer self.allocator.free(body);
 
         self.remember(key, body, nowSeconds(self.io));
-        return parse(allocator, body);
+        const forecast = parse(allocator, body) catch |err| {
+            self.reportFailure(timer, err);
+            return err;
+        };
+        self.reportUpstream(timer, .succeeded);
+        return forecast;
+    }
+
+    fn reportCache(self: *Client, result: metrics.CacheResult) void {
+        if (self.metrics) |registry| registry.cacheLookup(.forecast, result);
+    }
+
+    fn reportUpstream(self: *Client, timer: metrics.Timer, result: metrics.UpstreamResult) void {
+        if (self.metrics) |registry| registry.upstreamRequest(.openmeteo, result, timer.elapsedNs(self.io));
+    }
+
+    /// Only an unreachable endpoint or unusable data is the upstream's
+    /// failure; running out of memory is ours and is not reported as one.
+    fn reportFailure(self: *Client, timer: metrics.Timer, err: Error) void {
+        switch (err) {
+            error.NetworkUnavailable => self.reportUpstream(timer, .network_error),
+            error.InvalidData => self.reportUpstream(timer, .invalid_data),
+            else => {},
+        }
     }
 
     /// The request URL for one location. Every variable list here has to
@@ -510,4 +542,53 @@ test "the cache evicts the oldest grid cell when it is full" {
     std.testing.allocator.free(found.?.body);
 
     try std.testing.expect(client.cachedBody(.{ .lat_hundredths = 0, .lon_hundredths = 0 }, cache_capacity + 1) == null);
+}
+
+test "lookups and downloads are reported to the registry" {
+    counting_fetch.reset();
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    var client = Client.init(std.testing.allocator, std.testing.io, 900);
+    client.fetch = &counting_fetch.fetch;
+    client.metrics = &registry;
+    defer client.deinit();
+
+    const first = try client.get(std.testing.allocator, 52.2297, 21.0122);
+    defer first.deinit(std.testing.allocator);
+    const second = try client.get(std.testing.allocator, 52.2297, 21.0122);
+    defer second.deinit(std.testing.allocator);
+
+    client.fetch = &unavailable;
+    client.entries.items[0].fetched_at_seconds = 0;
+    try std.testing.expectError(error.NetworkUnavailable, client.get(std.testing.allocator, 52.2297, 21.0122));
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    for ([_][]const u8{
+        "szklana_pogoda_cache_lookups_total{cache=\"forecast\",result=\"miss\"} 2\n",
+        "szklana_pogoda_cache_lookups_total{cache=\"forecast\",result=\"hit\"} 1\n",
+        "szklana_pogoda_upstream_requests_total{upstream=\"openmeteo\",result=\"succeeded\"} 1\n",
+        "szklana_pogoda_upstream_requests_total{upstream=\"openmeteo\",result=\"network_error\"} 1\n",
+    }) |expected| {
+        try std.testing.expect(std.mem.find(u8, rendered, expected) != null);
+    }
+}
+
+test "an unusable body is reported as invalid data" {
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    var client = Client.init(std.testing.allocator, std.testing.io, 900);
+    client.fetch = &notJson;
+    client.metrics = &registry;
+    defer client.deinit();
+
+    try std.testing.expectError(error.InvalidData, client.get(std.testing.allocator, 52.2297, 21.0122));
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_upstream_requests_total{upstream=\"openmeteo\",result=\"invalid_data\"} 1\n") != null);
+}
+
+fn notJson(allocator: std.mem.Allocator, _: Io, _: []const u8) Error![]u8 {
+    return allocator.dupe(u8, "<html>bad gateway</html>");
 }

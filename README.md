@@ -132,6 +132,32 @@ through the same embedded Antistorm table. An invalid coordinate is a `400`, an
 unreachable Open-Meteo is a `502`, and a grid cell younger than
 `FORECAST_CACHE_SECONDS` is served from memory instead of being fetched again.
 
+## Metrics
+
+`GET /metrics` on `METRICS_PORT` answers in the Prometheus text format. The
+listener does not count its own scrapes.
+
+| Series | Labels | Meaning |
+| --- | --- | --- |
+| `szklana_pogoda_http_requests_total` | `method`, `route`, `status` | completed requests of the application listener; `route` is the registered path or `unmatched` |
+| `szklana_pogoda_http_in_flight_requests` | `method`, `route` | requests being handled now |
+| `szklana_pogoda_http_request_duration_seconds` | `method`, `route`, `status` | histogram, timed from the moment the request head is read |
+| `szklana_pogoda_http_head_errors_total` | `reason` | connections whose request head could not be read |
+| `szklana_pogoda_poll_total` | `source`, `result` | IMGW polls; `result` is `saved`, `fresh` (served from the store) or the stage that failed |
+| `szklana_pogoda_poll_duration_seconds` | `source` | histogram of the polls that went to the network |
+| `szklana_pogoda_poll_records_saved_total` | `source` | rows a poll wrote to the store |
+| `szklana_pogoda_poll_last_success_timestamp_seconds` | `source` | Unix time the last successful poll started |
+| `szklana_pogoda_cache_lookups_total` | `cache`, `result` | Antistorm (`storm`) and Open-Meteo (`forecast`) cache `hit` or `miss` |
+| `szklana_pogoda_upstream_requests_total` | `upstream`, `result` | downloads from Antistorm and Open-Meteo: `succeeded`, `network_error` or `invalid_data` |
+| `szklana_pogoda_upstream_request_duration_seconds` | `upstream` | histogram of those downloads |
+| `process_resident_memory_bytes`, `process_virtual_memory_bytes`, `szklana_pogoda_process_own_memory_bytes` | | the figures `/api/memory` reports, read at scrape time |
+
+`source` is the product label of the updater's source table: `synop`, `meteo`,
+`hydro`, `meteo warning` or `hydro warning`. A poll that failed reports the
+stage it failed at (`fetch_failed`, `convert_failed`, `save_failed` or
+`record_failed`), so an alert on a source that stopped updating can use
+`time() - szklana_pogoda_poll_last_success_timestamp_seconds`.
+
 ## Layout
 
 `src/imgw/` owns the endpoints and the mapping of IMGW records into the domain

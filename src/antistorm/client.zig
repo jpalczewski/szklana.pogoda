@@ -16,6 +16,7 @@ const Io = std.Io;
 
 const cities = @import("cities.zig");
 const http_fetch = @import("../http_fetch.zig");
+const metrics = @import("../metrics/mod.zig");
 
 pub const Error = std.mem.Allocator.Error || error{
     /// The endpoint answered with something that is not the documented object.
@@ -128,6 +129,8 @@ pub const Client = struct {
     /// How long a downloaded reading is reused, in seconds.
     ttl_seconds: u64,
     fetch: Fetch = &httpFetch,
+    /// Where lookups and downloads are reported; null reports nothing.
+    metrics: ?*metrics.Registry = null,
     mutex: Io.Mutex = .init,
     entries: std.ArrayList(Entry) = .empty,
 
@@ -152,17 +155,27 @@ pub const Client = struct {
         self.mutex.lockUncancelable(self.io);
         if (self.cachedRead(self.allocator, id, nowSeconds(self.io))) |reading| {
             self.mutex.unlock(self.io);
+            self.reportCache(.hit);
             return reading;
         }
         self.mutex.unlock(self.io);
+        self.reportCache(.miss);
 
         const url = try self.urlFor(id);
         defer self.allocator.free(url);
-        const body = try self.fetch(self.allocator, self.io, url);
+        const timer: metrics.Timer = .start(self.io);
+        const body = self.fetch(self.allocator, self.io, url) catch |err| {
+            self.reportFailure(timer, err);
+            return err;
+        };
         defer self.allocator.free(body);
 
-        var entry = try parse(self.allocator, id, body);
+        var entry = parse(self.allocator, id, body) catch |err| {
+            self.reportFailure(timer, err);
+            return err;
+        };
         defer entry.deinit(self.allocator);
+        self.reportUpstream(timer, .succeeded);
         self.remember(entry, nowSeconds(self.io));
 
         // The cache owns the decoded name from here on, so the caller gets its
@@ -170,6 +183,24 @@ pub const Client = struct {
         var reading = entry.reading(0);
         reading.city_name = try self.allocator.dupe(u8, entry.city_name);
         return reading;
+    }
+
+    fn reportCache(self: *Client, result: metrics.CacheResult) void {
+        if (self.metrics) |registry| registry.cacheLookup(.storm, result);
+    }
+
+    fn reportUpstream(self: *Client, timer: metrics.Timer, result: metrics.UpstreamResult) void {
+        if (self.metrics) |registry| registry.upstreamRequest(.antistorm, result, timer.elapsedNs(self.io));
+    }
+
+    /// Only an unreachable endpoint or unusable data is the upstream's
+    /// failure; running out of memory is ours and is not reported as one.
+    fn reportFailure(self: *Client, timer: metrics.Timer, err: Error) void {
+        switch (err) {
+            error.NetworkUnavailable => self.reportUpstream(timer, .network_error),
+            error.InvalidData => self.reportUpstream(timer, .invalid_data),
+            else => {},
+        }
     }
 
     /// The request URL for one city. The endpoint takes the id as a query
@@ -476,4 +507,53 @@ test "readings are released by deinitReadings" {
         .fetched_age_seconds = 0,
     };
     deinitReadings(std.testing.allocator, readings);
+}
+
+test "lookups and downloads are reported to the registry" {
+    counting_fetch.reset();
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    var client = Client.init(std.testing.allocator, std.testing.io, 300);
+    client.fetch = &counting_fetch.fetch;
+    client.metrics = &registry;
+    defer client.deinit();
+
+    const first = try client.get("Zakopane");
+    defer first.deinit(std.testing.allocator);
+    const second = try client.get("Zakopane");
+    defer second.deinit(std.testing.allocator);
+
+    client.fetch = &unavailable;
+    client.entries.items[0].fetched_at_seconds = 0;
+    try std.testing.expectError(error.NetworkUnavailable, client.get("Zakopane"));
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    for ([_][]const u8{
+        "szklana_pogoda_cache_lookups_total{cache=\"storm\",result=\"miss\"} 2\n",
+        "szklana_pogoda_cache_lookups_total{cache=\"storm\",result=\"hit\"} 1\n",
+        "szklana_pogoda_upstream_requests_total{upstream=\"antistorm\",result=\"succeeded\"} 1\n",
+        "szklana_pogoda_upstream_requests_total{upstream=\"antistorm\",result=\"network_error\"} 1\n",
+    }) |expected| {
+        try std.testing.expect(std.mem.find(u8, rendered, expected) != null);
+    }
+}
+
+test "an unusable body is reported as invalid data" {
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    var client = Client.init(std.testing.allocator, std.testing.io, 300);
+    client.fetch = &htmlBody;
+    client.metrics = &registry;
+    defer client.deinit();
+
+    try std.testing.expectError(error.InvalidData, client.get("Zakopane"));
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_upstream_requests_total{upstream=\"antistorm\",result=\"invalid_data\"} 1\n") != null);
+}
+
+fn htmlBody(allocator: std.mem.Allocator, _: Io, _: []const u8) Error![]u8 {
+    return allocator.dupe(u8, "<p>no_id</p>");
 }

@@ -9,7 +9,8 @@ const pages = @import("routes/pages.zig");
 const storm = @import("routes/storm.zig");
 const forecast_route = @import("routes/forecast.zig");
 const app_log = @import("app_log.zig");
-const metrics = @import("metrics.zig");
+const metrics = @import("metrics/mod.zig");
+const metrics_family = @import("metrics/family.zig");
 const metrics_route = @import("routes/metrics.zig");
 const antistorm = @import("antistorm/mod.zig");
 const openmeteo = @import("openmeteo/mod.zig");
@@ -25,6 +26,7 @@ const http_fetch = @import("http_fetch.zig");
 const modules = .{
     app_log,
     metrics,
+    metrics_family,
     process_memory,
     router,
     server,
@@ -174,10 +176,14 @@ pub fn main(init: std.process.Init) !void {
     };
     var observations = try weather.Store.initFile(gpa, database_path, timestamps.clock().*);
     defer observations.deinit();
+    var metrics_registry = metrics.Registry.init(gpa);
+    defer metrics_registry.deinit();
     var storm_client = antistorm.Client.init(gpa, io, config.storm_cache_seconds);
     defer storm_client.deinit();
+    storm_client.metrics = &metrics_registry;
     var forecast_client = openmeteo.Client.init(gpa, io, config.forecast_cache_seconds);
     defer forecast_client.deinit();
+    forecast_client.metrics = &metrics_registry;
 
     var address = try net.IpAddress.parseIp4(config.host, config.port);
     var listener = try address.listen(io, .{ .reuse_address = true });
@@ -186,8 +192,6 @@ pub fn main(init: std.process.Init) !void {
     var metrics_listener = try metrics_address.listen(io, .{ .reuse_address = true });
     defer metrics_listener.deinit(io);
 
-    var metrics_registry = metrics.Registry.init(gpa);
-    defer metrics_registry.deinit();
     var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry, .weather_store = &observations, .storm = &storm_client, .forecast = &forecast_client, .io = io };
     var metrics_app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trust_proxy = config.trust_proxy, .metrics = &metrics_registry };
     var connections: Io.Group = .init;
@@ -218,8 +222,8 @@ pub fn main(init: std.process.Init) !void {
     // A poll decodes megabytes and stores them immediately, so its scratch
     // memory is handed to an allocator that returns pages to the kernel rather
     // than to the one the process keeps its long-lived state in.
-    try connections.concurrent(io, weather.updater.run, .{ std.heap.page_allocator, io, &observations, config.imgw_interval_seconds });
-    try connections.concurrent(io, weather.updater.runWarnings, .{ std.heap.page_allocator, io, &observations, config.imgw_warnings_interval_seconds });
+    try connections.concurrent(io, weather.updater.run, .{ std.heap.page_allocator, io, &observations, &metrics_registry, config.imgw_interval_seconds });
+    try connections.concurrent(io, weather.updater.runWarnings, .{ std.heap.page_allocator, io, &observations, &metrics_registry, config.imgw_warnings_interval_seconds });
     try listeners.await(io);
 }
 

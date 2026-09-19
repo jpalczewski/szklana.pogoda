@@ -4,7 +4,7 @@ const Io = std.Io;
 const net = Io.net;
 
 const app_log = @import("app_log.zig");
-const metrics = @import("metrics.zig");
+const metrics = @import("metrics/mod.zig");
 const router = @import("router.zig");
 
 pub const ListenerConfig = struct {
@@ -17,7 +17,7 @@ pub const ListenerConfig = struct {
 
 const Observation = struct {
     registry: ?*metrics.Registry,
-    started_at: Io.Timestamp,
+    timer: metrics.Timer,
     peer_ip: []const u8,
     client_ip: []const u8,
     method: []const u8,
@@ -34,22 +34,23 @@ const Observation = struct {
     }
 
     fn finish(self: *const Observation, io: Io, response: router.Response) void {
-        const elapsed_ms = self.started_at.durationTo(Io.Clock.awake.now(io)).toMilliseconds();
+        const duration_ns = self.timer.elapsedNs(io);
         app_log.logAccess(.{
             .client_ip = self.client_ip,
             .peer_ip = self.peer_ip,
             .method = self.method,
             .target = self.target,
             .status = @intCast(@intFromEnum(response.status)),
-            .duration_ms = @intCast(@max(0, elapsed_ms)),
+            .duration_ms = duration_ns / std.time.ns_per_ms,
             .user_agent = findHeader(self.headers, "user-agent"),
             .referer = findHeader(self.headers, "referer"),
             .response_bytes = response.body.len,
         });
-        if (self.registry) |registry| {
-            const duration_ns = elapsed_ms * std.time.ns_per_ms;
-            registry.finish(self.method, self.route, @intCast(@intFromEnum(response.status)), @intCast(@max(0, duration_ns)));
-        }
+        self.count(response.status, duration_ns);
+    }
+
+    fn count(self: *const Observation, status: http.Status, duration_ns: u64) void {
+        if (self.registry) |registry| registry.finish(self.method, self.route, @intCast(@intFromEnum(status)), duration_ns);
     }
 };
 
@@ -81,12 +82,18 @@ fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, confi
     var connection_reader = stream.reader(io, &recv_buffer);
     var connection_writer = stream.writer(io, &send_buffer);
     var http_server: http.Server = .init(&connection_reader.interface, &connection_writer.interface);
-    const started_at = Io.Clock.awake.now(io);
+    const registry = instrumentedRegistry(config);
 
     var request = http_server.receiveHead() catch |err| switch (err) {
         error.HttpConnectionClosing => return,
-        else => return err,
+        else => {
+            if (registry) |instrumented| instrumented.headError(@errorName(err));
+            return err;
+        },
     };
+    // Timed from here: the wait for the client to send its head is the
+    // client's, not the handler's, and would otherwise fill the histogram.
+    const timer: metrics.Timer = .start(io);
 
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
@@ -104,8 +111,8 @@ fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, confi
     const target_parts = router.splitTarget(target);
     const client_ip = clientIp(config.app.trust_proxy, headers, peer_ip);
     const observation: Observation = .{
-        .registry = if (config.instrument_requests) config.app.metrics else null,
-        .started_at = started_at,
+        .registry = registry,
+        .timer = timer,
         .peer_ip = peer_ip,
         .client_ip = client_ip,
         .method = @tagName(method),
@@ -146,6 +153,12 @@ fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, confi
 
     const response = router.dispatch(config.routes, config.app, &context) catch |err| router.errorResponse(allocator, context.path, err);
     try writeResponseAndLog(io, &request, response, &observation);
+}
+
+/// The registry a listener reports to, if it reports at all: the metrics
+/// listener does not count its own scrapes.
+fn instrumentedRegistry(config: *const ListenerConfig) ?*metrics.Registry {
+    return if (config.instrument_requests) config.app.metrics else null;
 }
 
 fn routeLabel(routes: []const router.Route, path: []const u8) []const u8 {
@@ -228,8 +241,10 @@ fn writeResponseAndLog(
     response: router.Response,
     observation: *const Observation,
 ) !void {
+    // The handler produced this status whether or not the client stayed to
+    // read it, so the request is counted either way.
+    defer observation.finish(io, response);
     try writeResponse(request, response);
-    observation.finish(io, response);
 }
 
 test "observation stays active until scope exit including error returns" {
@@ -237,7 +252,7 @@ test "observation stays active until scope exit including error returns" {
         fn run(registry: *metrics.Registry, fail: bool) !void {
             const observation: Observation = .{
                 .registry = registry,
-                .started_at = Io.Clock.awake.now(std.testing.io),
+                .timer = .start(std.testing.io),
                 .peer_ip = "192.0.2.1",
                 .client_ip = "192.0.2.1",
                 .method = "GET",
@@ -248,7 +263,7 @@ test "observation stays active until scope exit including error returns" {
             observation.begin();
             defer observation.end();
 
-            const active = try registry.render(std.testing.allocator);
+            const active = try registry.renderAlloc(std.testing.allocator);
             defer std.testing.allocator.free(active);
             try std.testing.expect(std.mem.find(u8, active, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 1\n") != null);
             if (fail) return error.TestRequestFailed;
@@ -263,11 +278,48 @@ test "observation stays active until scope exit including error returns" {
         } else {
             try exercise.run(&registry, fail);
         }
-        const ended = try registry.render(std.testing.allocator);
+        const ended = try registry.renderAlloc(std.testing.allocator);
         defer std.testing.allocator.free(ended);
         try std.testing.expect(std.mem.find(u8, ended, "szklana_pogoda_http_in_flight_requests{method=\"GET\",route=\"/\"} 0\n") != null);
-        try std.testing.expectEqual(@as(usize, 0), registry.series.items.len);
+        // Only a finished request is counted; an observation that just ends is not.
+        try std.testing.expect(std.mem.find(u8, ended, "szklana_pogoda_http_requests_total{") == null);
     }
+}
+
+// Not `finish`: it writes the access log to stdout, which is the channel the
+// test runner talks over, and a test that writes there hangs the build.
+test "counting an observation records the request once under its status" {
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    const observation: Observation = .{
+        .registry = &registry,
+        .timer = .start(std.testing.io),
+        .peer_ip = "192.0.2.1",
+        .client_ip = "192.0.2.1",
+        .method = "GET",
+        .route = "/known",
+        .target = "/known",
+        .headers = &.{},
+    };
+
+    observation.count(.not_found, 3 * std.time.ns_per_ms);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_http_requests_total{method=\"GET\",route=\"/known\",status=\"404\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "_duration_seconds_count{method=\"GET\",route=\"/known\",status=\"404\"} 1\n") != null);
+}
+
+test "an unreadable head is counted only on an instrumented listener" {
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    var app: router.App = .{ .max_body_bytes = 16, .metrics = &registry };
+    var listener: net.Server = undefined;
+    const instrumented: ListenerConfig = .{ .name = "application", .listener = &listener, .app = &app, .routes = &.{}, .instrument_requests = true };
+    const scrape: ListenerConfig = .{ .name = "metrics", .listener = &listener, .app = &app, .routes = &.{}, .instrument_requests = false };
+
+    try std.testing.expect(instrumentedRegistry(&instrumented) == &registry);
+    try std.testing.expect(instrumentedRegistry(&scrape) == null);
 }
 
 test "client IP uses peer address unless proxy headers are trusted" {
