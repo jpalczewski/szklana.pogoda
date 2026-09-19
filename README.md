@@ -85,7 +85,7 @@ All timestamps are stored in the UTC-suffixed form `YYYY-MM-DDTHH:MM:SSZ`.
 | `GET /api/warnings/revisions?source=&id=` | revisions of one warning |
 | `GET /api/storm/cities?q=` | the Antistorm city table with ids |
 | `GET /api/storm/city?city=` or `?id=` | one city's newest reading |
-| `GET /api/forecast?lat=&lon=` or `?city=` | Open-Meteo forecast (current + 7-day daily) for one location |
+| `GET /api/forecast?lat=&lon=` or `?city=` | Open-Meteo forecast (current + 7-day daily + next 24 hours) for one location |
 | `GET /api/memory` | process memory |
 | `GET /metrics` | Prometheus metrics (second listener) |
 
@@ -131,6 +131,10 @@ for convenience, a `city` resolved the same way the storm route resolves one,
 through the same embedded Antistorm table. An invalid coordinate is a `400`, an
 unreachable Open-Meteo is a `502`, and a grid cell younger than
 `FORECAST_CACHE_SECONDS` is served from memory instead of being fetched again.
+`forecast.hourly` lists the 24 hours from the current one, in the location's
+local time; an hour Open-Meteo has no rain probability for reports
+`precipitation_chance_percent: null`. The main page shows the forecast in three
+tabs: now, the seven days and those 24 hours.
 
 ## Metrics
 
