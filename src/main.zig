@@ -220,8 +220,8 @@ pub fn main(init: std.process.Init) !void {
     // A poll decodes megabytes and stores them immediately, so its scratch
     // memory is handed to an allocator that returns pages to the kernel rather
     // than to the one the process keeps its long-lived state in.
-    try connections.concurrent(io, weather.updater.run, .{ std.heap.page_allocator, io, &observations, config.imgw_interval_seconds });
-    try connections.concurrent(io, weather.updater.runWarnings, .{ std.heap.page_allocator, io, &observations, config.imgw_warnings_interval_seconds });
+    try connections.concurrent(io, weather.updater.run, .{ std.heap.page_allocator, io, &observations, &metrics_registry, config.imgw_interval_seconds });
+    try connections.concurrent(io, weather.updater.runWarnings, .{ std.heap.page_allocator, io, &observations, &metrics_registry, config.imgw_warnings_interval_seconds });
     try listeners.await(io);
 }
 

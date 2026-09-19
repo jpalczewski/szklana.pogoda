@@ -46,6 +46,20 @@ pub const latency_bounds_ns = [_]u64{
     10 * std.time.ns_per_s,
 };
 
+/// Upper bounds, in nanoseconds, for operations that move real data over the
+/// network: 100 ms to a minute.
+pub const slow_bounds_ns = [_]u64{
+    100 * std.time.ns_per_ms,
+    250 * std.time.ns_per_ms,
+    500 * std.time.ns_per_ms,
+    std.time.ns_per_s,
+    2500 * std.time.ns_per_ms,
+    5 * std.time.ns_per_s,
+    10 * std.time.ns_per_s,
+    30 * std.time.ns_per_s,
+    60 * std.time.ns_per_s,
+};
+
 /// A value that only goes up.
 pub fn Counter(comptime name: []const u8, comptime help: []const u8, comptime Labels: type) type {
     const Base = Family(name, help, "counter", Labels, CounterData);

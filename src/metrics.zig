@@ -50,6 +50,53 @@ const HttpHeadErrors = family.Counter(
     HttpHeadErrorLabels,
 );
 
+/// How one poll of an IMGW product ended. `fresh` means nothing was
+/// downloaded because the stored rows were recent enough; every other result
+/// after `freshness_check_failed` is the stage at which a download failed.
+pub const PollResult = enum {
+    convert_failed,
+    fetch_failed,
+    fresh,
+    freshness_check_failed,
+    record_failed,
+    save_failed,
+    saved,
+};
+
+const PollLabels = struct {
+    source: []const u8,
+    result: PollResult,
+};
+
+const PollSourceLabels = struct {
+    source: []const u8,
+};
+
+const PollTotal = family.Counter(
+    "szklana_pogoda_poll_total",
+    "Polls of an IMGW product, by source and how they ended.",
+    PollLabels,
+);
+
+const PollDuration = family.Histogram(
+    "szklana_pogoda_poll_duration_seconds",
+    "Time a poll that went to the network spent downloading, decoding and storing, in seconds.",
+    PollSourceLabels,
+    &family.slow_bounds_ns,
+);
+
+const PollRecordsSaved = family.Counter(
+    "szklana_pogoda_poll_records_saved_total",
+    "Rows a poll wrote to the store.",
+    PollSourceLabels,
+);
+
+const PollLastSuccess = family.Gauge(
+    "szklana_pogoda_poll_last_success_timestamp_seconds",
+    "Unix time at which the last successful poll of a source started.",
+    PollSourceLabels,
+);
+
 /// Measures a span on the monotonic clock, in nanoseconds, so that a request
 /// answered from memory does not read as zero.
 pub const Timer = struct {
@@ -74,6 +121,10 @@ pub const Registry = struct {
         http_in_flight: HttpInFlight,
         http_duration: HttpDuration,
         http_head_errors: HttpHeadErrors,
+        poll_total: PollTotal,
+        poll_duration: PollDuration,
+        poll_records_saved: PollRecordsSaved,
+        poll_last_success: PollLastSuccess,
     };
 
     pub fn init(allocator: std.mem.Allocator) Registry {
@@ -82,6 +133,10 @@ pub const Registry = struct {
             .http_in_flight = .init(allocator),
             .http_duration = .init(allocator),
             .http_head_errors = .init(allocator),
+            .poll_total = .init(allocator),
+            .poll_duration = .init(allocator),
+            .poll_records_saved = .init(allocator),
+            .poll_last_success = .init(allocator),
         } };
     }
 
@@ -108,6 +163,22 @@ pub const Registry = struct {
     /// request with a route to count. `reason` is an error name.
     pub fn headError(self: *Registry, reason: []const u8) void {
         self.families.http_head_errors.inc(.{ .reason = reason });
+    }
+
+    /// One poll of `source` has ended. `took_ns` is how long it ran and
+    /// `saved` how many rows it wrote, even when a later step failed;
+    /// `started_at` is the epoch second the poll began, which is what a
+    /// successful poll is dated by.
+    pub fn poll(self: *Registry, source: []const u8, result: PollResult, took_ns: u64, saved: usize, started_at: u64) void {
+        self.families.poll_total.inc(.{ .source = source, .result = result });
+        switch (result) {
+            // Nothing went to the network, so there is no duration to record.
+            .fresh, .freshness_check_failed => return,
+            else => {},
+        }
+        self.families.poll_duration.observe(.{ .source = source }, took_ns);
+        if (saved > 0) self.families.poll_records_saved.add(.{ .source = source }, saved);
+        if (result == .saved) self.families.poll_last_success.set(.{ .source = source }, started_at);
     }
 
     /// Writes every family in the Prometheus text format.
@@ -172,4 +243,25 @@ test "timer never runs backwards" {
     const second = timer.elapsedNs(std.testing.io);
     try std.testing.expect(second >= first);
     try std.testing.expect(second < std.time.ns_per_s);
+}
+
+test "registry records a poll by source and result" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    registry.poll("synop", .saved, 2 * std.time.ns_per_s, 60, 1_000);
+    registry.poll("synop", .fresh, 10, 0, 1_100);
+    registry.poll("hydro", .fetch_failed, 3 * std.time.ns_per_s, 0, 1_200);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_total{source=\"synop\",result=\"saved\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_total{source=\"synop\",result=\"fresh\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_total{source=\"hydro\",result=\"fetch_failed\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_records_saved_total{source=\"synop\"} 60\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_last_success_timestamp_seconds{source=\"synop\"} 1000\n") != null);
+    // A skipped poll is not a timed download, and a failed one is not a success.
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_duration_seconds_count{source=\"synop\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_duration_seconds_count{source=\"hydro\"} 1\n") != null);
+    try std.testing.expect(std.mem.find(u8, rendered, "last_success_timestamp_seconds{source=\"hydro\"}") == null);
 }
