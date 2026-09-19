@@ -1,5 +1,5 @@
-//! `GET /api/forecast`: Open-Meteo's current conditions and daily summary
-//! for one location.
+//! `GET /api/forecast`: Open-Meteo's current conditions, daily summary and
+//! next 24 hours for one location.
 //!
 //! The location is either `?lat=&lon=` or `?city=<name>`, resolved through
 //! Antistorm's city table the same way `routes/storm.zig` resolves a
@@ -65,7 +65,7 @@ fn fixtureClient() openmeteo.Client {
 }
 
 const fixture_body =
-    \\{"latitude":52.25,"longitude":21.0,"current":{"time":"2026-09-18T14:00","temperature_2m":18.4,"apparent_temperature":17.9,"relative_humidity_2m":63,"precipitation":0.0,"weather_code":3,"wind_speed_10m":11.2,"wind_direction_10m":240},"daily":{"time":["2026-09-18"],"weather_code":[3],"temperature_2m_max":[19.5],"temperature_2m_min":[10.1],"precipitation_sum":[0.0],"precipitation_probability_max":[10],"sunrise":["2026-09-18T06:15"],"sunset":["2026-09-18T19:02"]}}
+    \\{"latitude":52.25,"longitude":21.0,"current":{"time":"2026-09-18T14:00","temperature_2m":18.4,"apparent_temperature":17.9,"relative_humidity_2m":63,"precipitation":0.0,"weather_code":3,"wind_speed_10m":11.2,"wind_direction_10m":240},"daily":{"time":["2026-09-18"],"weather_code":[3],"temperature_2m_max":[19.5],"temperature_2m_min":[10.1],"precipitation_sum":[0.0],"precipitation_probability_max":[10],"sunrise":["2026-09-18T06:15"],"sunset":["2026-09-18T19:02"]},"hourly":{"time":["2026-09-18T14:00"],"temperature_2m":[18.4],"precipitation_probability":[10],"precipitation":[0.0],"weather_code":[3],"wind_speed_10m":[11.2],"wind_direction_10m":[240]}}
 ;
 
 fn fetchFixture(allocator: std.mem.Allocator, io: std.Io, _: []const u8) openmeteo.Error![]u8 {
@@ -94,6 +94,7 @@ test "forecast answers one location as JSON" {
     defer std.testing.allocator.free(response.body);
     try std.testing.expectEqual(.ok, response.status);
     try std.testing.expect(std.mem.startsWith(u8, response.body, "{\"forecast\":{\"latitude\":52.25,\"longitude\":21"));
+    try std.testing.expect(std.mem.find(u8, response.body, "\"hourly\":[{\"time\":\"2026-09-18T14:00\",\"temperature_c\":18.4,\"precipitation_chance_percent\":10") != null);
 }
 
 test "forecast resolves a city name through the Antistorm table" {
