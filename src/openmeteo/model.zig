@@ -80,3 +80,56 @@ pub fn deinitDays(allocator: std.mem.Allocator, days: []const Day) void {
         allocator.free(day.sunset);
     }
 }
+
+/// The few groups of WMO weather interpretation codes the site has a word and
+/// a picture for. The names are the ones of the icons in
+/// `src/web/weather_icons.txt` and the `wmo_*` locale keys.
+pub const Condition = enum {
+    clear,
+    partly,
+    cloudy,
+    fog,
+    drizzle,
+    rain,
+    showers,
+    snow,
+    thunderstorm,
+};
+
+/// The group a WMO code belongs to, or null for a code the site does not
+/// describe. `weather_group` in `src/web/app.js` folds the same codes the same
+/// way, so the page and a link preview name one weather alike.
+pub fn condition(code: u8) ?Condition {
+    return switch (code) {
+        0 => .clear,
+        1, 2 => .partly,
+        3 => .cloudy,
+        45, 48 => .fog,
+        51...57 => .drizzle,
+        61...67 => .rain,
+        71...77, 85, 86 => .snow,
+        80...82 => .showers,
+        95...99 => .thunderstorm,
+        else => null,
+    };
+}
+
+test "condition folds WMO codes into the groups the page names" {
+    try std.testing.expectEqual(Condition.clear, condition(0).?);
+    try std.testing.expectEqual(Condition.partly, condition(2).?);
+    try std.testing.expectEqual(Condition.cloudy, condition(3).?);
+    try std.testing.expectEqual(Condition.fog, condition(48).?);
+    try std.testing.expectEqual(Condition.drizzle, condition(53).?);
+    try std.testing.expectEqual(Condition.rain, condition(63).?);
+    try std.testing.expectEqual(Condition.snow, condition(75).?);
+    try std.testing.expectEqual(Condition.snow, condition(86).?);
+    try std.testing.expectEqual(Condition.showers, condition(81).?);
+    try std.testing.expectEqual(Condition.thunderstorm, condition(96).?);
+}
+
+test "condition has no group for a code the site does not describe" {
+    try std.testing.expect(condition(4) == null);
+    try std.testing.expect(condition(58) == null);
+    try std.testing.expect(condition(83) == null);
+    try std.testing.expect(condition(255) == null);
+}

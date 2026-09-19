@@ -74,8 +74,39 @@ pub fn main(init: std.process.Init) !void {
         );
     }
     try generated.writer.writeAll("};\n");
+    try writeStrings(allocator, &generated.writer, "pl", pl_locale);
+    try writeStrings(allocator, &generated.writer, "en", en_locale);
 
     try cwd.writeFile(init.io, .{ .sub_path = args[4], .data = generated.written() });
+}
+
+/// Writes one locale as a struct of its strings, so the server can say the
+/// same words the page does (a link preview is built at run time, the page at
+/// build time). Every key is emitted; a declaration nothing uses costs nothing.
+fn writeStrings(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    name: []const u8,
+    locale_json: []const u8,
+) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, locale_json, .{});
+    defer parsed.deinit();
+
+    const translations = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.LocaleMustBeObject,
+    };
+
+    try writer.print("pub const {f} = struct {{\n", .{std.zig.fmtId(name)});
+    var entries = translations.iterator();
+    while (entries.next()) |entry| {
+        const text = switch (entry.value_ptr.*) {
+            .string => |string| string,
+            else => return error.TranslationMustBeString,
+        };
+        try writer.print("    pub const {f} = \"{f}\";\n", .{ std.zig.fmtId(entry.key_ptr.*), std.zig.fmtString(text) });
+    }
+    try writer.writeAll("};\n");
 }
 
 fn render(
@@ -283,6 +314,31 @@ test "render substitutes translations and escapes HTML" {
     defer std.testing.allocator.free(rendered);
 
     try std.testing.expectEqualStrings("<p title=\"A &amp; B\">Use &lt;tags&gt; safely</p>", rendered);
+}
+
+test "writeStrings emits every translation as a declaration" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+
+    try writeStrings(std.testing.allocator, &out.writer, "pl", "{\"wmo_rain\": \"deszcz \\\"x\\\"\", \"a b\": \"c\"}");
+
+    try std.testing.expectEqualStrings(
+        "pub const pl = struct {\n" ++
+            "    pub const wmo_rain = \"deszcz \\\"x\\\"\";\n" ++
+            "    pub const @\"a b\" = \"c\";\n" ++
+            "};\n",
+        out.written(),
+    );
+}
+
+test "writeStrings rejects a translation that is not a string" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+
+    try std.testing.expectError(
+        error.TranslationMustBeString,
+        writeStrings(std.testing.allocator, &out.writer, "pl", "{\"n\": 1}"),
+    );
 }
 
 test "render rejects a missing translation" {
