@@ -270,7 +270,9 @@ fn HistogramData(comptime bounds_ns: []const u64) type {
         sum_ns: u64 = 0,
         buckets: [bounds_ns.len]u64 = [_]u64{0} ** bounds_ns.len,
 
-        fn write(self: @This(), writer: *Io.Writer, comptime name: []const u8, comptime Labels: type, labels: Labels) Io.Writer.Error!void {
+        const Self = @This();
+
+        fn write(self: Self, writer: *Io.Writer, comptime name: []const u8, comptime Labels: type, labels: Labels) Io.Writer.Error!void {
             inline for (bounds_ns, 0..) |bound, index| {
                 try writer.writeAll(name ++ "_bucket");
                 try writeLabels(writer, Labels, labels, .{ .seconds = nanosecondsToSeconds(bound) });
