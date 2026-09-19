@@ -5,10 +5,12 @@ const antistorm = @import("antistorm/mod.zig");
 const metrics = @import("metrics/mod.zig");
 const weather = @import("weather/mod.zig");
 const openmeteo = @import("openmeteo/mod.zig");
+const trusted_proxies = @import("trusted_proxies.zig");
 
 pub const App = struct {
     max_body_bytes: usize,
-    trust_proxy: bool = false,
+    /// Peers whose forwarded-address headers are believed; empty trusts none.
+    trusted_proxies: trusted_proxies.TrustedProxies = .{},
     metrics: ?*metrics.Registry = null,
     weather_store: ?*weather.Store = null,
     /// Antistorm readings; left null by tests that do not exercise the storm

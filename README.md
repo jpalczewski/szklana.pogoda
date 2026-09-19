@@ -53,7 +53,7 @@ Environment variables:
 | `DATABASE_PATH` | `weather.db` | SQLite file |
 | `MAX_BODY_BYTES` | `16384` | request body limit |
 | `MAX_CONNECTIONS_PER_CPU` | `4` | connection limit |
-| `TRUST_PROXY` | `false` | read the client address from `X-Forwarded-For` |
+| `TRUSTED_PROXIES` | empty | comma-separated IPs or CIDR blocks (`172.18.0.0/16`) of the proxies whose `CF-Connecting-IP` / `X-Forwarded-For` / `X-Real-IP` headers set the access log's `client_ip`; a request from any other peer is logged under its own address |
 | `IMGW_INTERVAL_SECONDS` | `600` | measurement poll interval |
 | `IMGW_WARNINGS_INTERVAL_SECONDS` | `300` | warning poll interval |
 | `STORM_CACHE_SECONDS` | `300` | how long one Antistorm city reading is reused |
