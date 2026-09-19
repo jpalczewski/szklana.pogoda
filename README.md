@@ -87,6 +87,7 @@ All timestamps are stored in the UTC-suffixed form `YYYY-MM-DDTHH:MM:SSZ`.
 | `GET /api/storm/city?city=` or `?id=` | one city's newest reading |
 | `GET /api/forecast?lat=&lon=` or `?city=` | Open-Meteo forecast (current + 7-day daily + next 24 hours) for one location |
 | `GET /api/memory` | process memory |
+| `GET /healthz` | liveness probe (`ok`); the container's `HEALTHCHECK` |
 | `GET /metrics` | Prometheus metrics (second listener) |
 
 `/api/memory` answers `own_bytes` (the memory the process owns: private
@@ -138,8 +139,10 @@ tabs: now, the seven days and those 24 hours.
 
 ## Metrics
 
-`GET /metrics` on `METRICS_PORT` answers in the Prometheus text format. The
-listener does not count its own scrapes.
+`GET /metrics` on `METRICS_PORT` answers in the Prometheus text format. Neither
+the scrape nor `/healthz` is counted in the request series or written to the
+access log (a failed one is still logged), so a dashboard of requests shows
+visitors and not probes.
 
 | Series | Labels | Meaning |
 | --- | --- | --- |
@@ -161,6 +164,14 @@ listener does not count its own scrapes.
 stage it failed at (`fetch_failed`, `convert_failed`, `save_failed` or
 `record_failed`), so an alert on a source that stopped updating can use
 `time() - szklana_pogoda_poll_last_success_timestamp_seconds`.
+
+Every series with a known set of labels (each source's poll counters, the caches,
+the upstreams and the head errors) exists from startup at 0, and a source's last
+success is 0 until its first success. A source that never succeeds therefore
+alerts on that age (about the epoch) and a first error changes a series instead
+of creating one, which `rate()` and `increase()` would miss. Labels are bounded:
+a value comes from a route table, an enum or a source table, never from a
+request, so add no label taken from input.
 
 ## Layout
 

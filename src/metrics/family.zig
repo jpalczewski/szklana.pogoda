@@ -87,6 +87,12 @@ pub fn Counter(comptime name: []const u8, comptime help: []const u8, comptime La
             self.add(labels, 1);
         }
 
+        /// Makes the series exist at zero, so that a counter that has not
+        /// happened yet renders as 0 instead of not at all.
+        pub fn declare(self: *Self, labels: Labels) void {
+            self.add(labels, 0);
+        }
+
         pub fn render(self: *Self, writer: *Io.Writer) Io.Writer.Error!void {
             return self.base.render(writer);
         }
@@ -115,6 +121,14 @@ pub fn Gauge(comptime name: []const u8, comptime help: []const u8, comptime Labe
             defer self.base.unlock();
             const series = self.base.findOrCreate(labels) catch return;
             series.data.value = value;
+        }
+
+        /// Makes the series exist without changing one that already does, so
+        /// a gauge nothing has set yet renders as 0 instead of not at all.
+        pub fn declare(self: *Self, labels: Labels) void {
+            self.base.lock();
+            defer self.base.unlock();
+            _ = self.base.findOrCreate(labels) catch return;
         }
 
         pub fn inc(self: *Self, labels: Labels) void {

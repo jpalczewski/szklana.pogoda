@@ -12,6 +12,7 @@ const app_log = @import("app_log.zig");
 const metrics = @import("metrics/mod.zig");
 const metrics_family = @import("metrics/family.zig");
 const metrics_route = @import("routes/metrics.zig");
+const health_route = @import("routes/health.zig");
 const antistorm = @import("antistorm/mod.zig");
 const openmeteo = @import("openmeteo/mod.zig");
 const imgw = @import("imgw/mod.zig");
@@ -35,6 +36,7 @@ const modules = .{
     api,
     pages,
     metrics_route,
+    health_route,
     storm,
     forecast_route,
     antistorm,
@@ -138,6 +140,7 @@ const routes = [_]router.Route{
     .{ .method = .GET, .path = "/icons.svg", .handler = pages.iconSprite },
     .{ .method = .GET, .path = "/favicon.svg", .handler = pages.favicon },
     .{ .method = .POST, .path = "/api/ping", .handler = api.ping },
+    .{ .method = .GET, .path = "/healthz", .handler = health_route.health, .quiet = true },
     .{ .method = .GET, .path = "/api/memory", .handler = api.memory },
     .{ .method = .GET, .path = "/api/weather/history", .handler = api.weatherHistory },
     .{ .method = .GET, .path = "/api/weather/stations", .handler = api.weatherStations },
@@ -152,7 +155,7 @@ const routes = [_]router.Route{
 };
 
 const metrics_routes = [_]router.Route{
-    .{ .method = .GET, .path = "/metrics", .handler = metrics_route.metrics },
+    .{ .method = .GET, .path = "/metrics", .handler = metrics_route.metrics, .quiet = true },
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -178,6 +181,9 @@ pub fn main(init: std.process.Init) !void {
     defer observations.deinit();
     var metrics_registry = metrics.Registry.init(gpa);
     defer metrics_registry.deinit();
+    metrics_registry.declareUpstreams();
+    server.declareMetrics(&metrics_registry);
+    weather.updater.declareMetrics(&metrics_registry);
     var storm_client = antistorm.Client.init(gpa, io, config.storm_cache_seconds);
     defer storm_client.deinit();
     storm_client.metrics = &metrics_registry;

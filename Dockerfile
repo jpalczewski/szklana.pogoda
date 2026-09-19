@@ -55,9 +55,11 @@ EXPOSE 8080
 # latency data. Reach it via the container network (e.g. a Prometheus scrape
 # target of `<container>:9090`), not a published port.
 #
-# /api/memory needs no database or network access, so it exercises the HTTP
-# server and router without depending on either.
+# /healthz answers from the router alone, with no database or network access, so
+# it exercises the HTTP server without depending on either. The server leaves it
+# out of the access log and the request metrics, so a probe every 30 seconds
+# does not drown the real traffic.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -q -O /dev/null "http://127.0.0.1:${PORT:-8080}/api/memory" || exit 1
+    CMD wget -q -O /dev/null "http://127.0.0.1:${PORT:-8080}/healthz" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/szklana-pogoda"]

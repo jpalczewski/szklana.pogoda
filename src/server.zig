@@ -24,6 +24,9 @@ const Observation = struct {
     route: []const u8,
     target: []const u8,
     headers: []const router.Header,
+    /// The route is `quiet`: its access line is written only when it failed.
+    /// Its metrics are left out by giving it no `registry`.
+    quiet: bool = false,
 
     fn begin(self: *const Observation) void {
         if (self.registry) |registry| registry.begin(self.method, self.route);
@@ -35,24 +38,38 @@ const Observation = struct {
 
     fn finish(self: *const Observation, io: Io, response: router.Response) void {
         const duration_ns = self.timer.elapsedNs(io);
-        app_log.logAccess(.{
-            .client_ip = self.client_ip,
-            .peer_ip = self.peer_ip,
-            .method = self.method,
-            .target = self.target,
-            .status = @intCast(@intFromEnum(response.status)),
-            .duration_ms = duration_ns / std.time.ns_per_ms,
-            .user_agent = findHeader(self.headers, "user-agent"),
-            .referer = findHeader(self.headers, "referer"),
-            .response_bytes = response.body.len,
-        });
+        if (self.logsAccess(response.status)) {
+            app_log.logAccess(.{
+                .client_ip = self.client_ip,
+                .peer_ip = self.peer_ip,
+                .method = self.method,
+                .target = self.target,
+                .status = @intCast(@intFromEnum(response.status)),
+                .duration_ms = duration_ns / std.time.ns_per_ms,
+                .user_agent = findHeader(self.headers, "user-agent"),
+                .referer = findHeader(self.headers, "referer"),
+                .response_bytes = response.body.len,
+            });
+        }
         self.count(response.status, duration_ns);
+    }
+
+    fn logsAccess(self: *const Observation, status: http.Status) bool {
+        return !self.quiet or status.class() != .success;
     }
 
     fn count(self: *const Observation, status: http.Status, duration_ns: u64) void {
         if (self.registry) |registry| registry.finish(self.method, self.route, @intCast(@intFromEnum(status)), duration_ns);
     }
 };
+
+/// Makes the head-error series exist before the first error, one per error
+/// `handleConnection` counts (a closing connection is not an error).
+pub fn declareMetrics(registry: *metrics.Registry) void {
+    inline for (@typeInfo(http.Server.ReceiveHeadError).error_set.?) |head_error| {
+        if (comptime !std.mem.eql(u8, head_error.name, "HttpConnectionClosing")) registry.declareHeadError(head_error.name);
+    }
+}
 
 pub fn serve(gpa: std.mem.Allocator, io: Io, config: *const ListenerConfig, connections: *Io.Group) void {
     while (true) {
@@ -110,13 +127,16 @@ fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, confi
     const content_length = request.head.content_length;
     const target_parts = router.splitTarget(target);
     const client_ip = clientIp(config.app.trust_proxy, headers, peer_ip);
+    const route = matchRoute(config.routes, target_parts.path);
+    const quiet = if (route) |matched| matched.quiet else false;
     const observation: Observation = .{
-        .registry = registry,
+        .registry = if (quiet) null else registry,
+        .quiet = quiet,
         .timer = timer,
         .peer_ip = peer_ip,
         .client_ip = client_ip,
         .method = @tagName(method),
-        .route = routeLabel(config.routes, target_parts.path),
+        .route = if (route) |matched| matched.path else "unmatched",
         .target = target,
         .headers = headers,
     };
@@ -161,11 +181,14 @@ fn instrumentedRegistry(config: *const ListenerConfig) ?*metrics.Registry {
     return if (config.instrument_requests) config.app.metrics else null;
 }
 
-fn routeLabel(routes: []const router.Route, path: []const u8) []const u8 {
+/// The route registered for `path`, whatever its method. Its `path` is the
+/// metrics label, which is why the label is bounded by the route table and
+/// never taken from the request.
+fn matchRoute(routes: []const router.Route, path: []const u8) ?router.Route {
     for (routes) |route| {
-        if (std.mem.eql(u8, route.path, path)) return route.path;
+        if (std.mem.eql(u8, route.path, path)) return route;
     }
-    return "unmatched";
+    return null;
 }
 
 fn clientIp(trust_proxy: bool, headers: []const router.Header, peer_ip: []const u8) []const u8 {
@@ -350,6 +373,62 @@ test "route labels use a bounded unmatched value" {
         }
     }.handle;
     const routes = [_]router.Route{.{ .method = .GET, .path = "/known", .handler = testHandlerFn }};
-    try std.testing.expectEqualStrings("/known", routeLabel(&routes, "/known"));
-    try std.testing.expectEqualStrings("unmatched", routeLabel(&routes, "/other"));
+    try std.testing.expectEqualStrings("/known", matchRoute(&routes, "/known").?.path);
+    try std.testing.expect(matchRoute(&routes, "/other") == null);
+}
+
+test "a quiet route is logged only when it failed" {
+    const observation: Observation = .{
+        .registry = null,
+        .quiet = true,
+        .timer = .start(std.testing.io),
+        .peer_ip = "192.0.2.1",
+        .client_ip = "192.0.2.1",
+        .method = "GET",
+        .route = "/healthz",
+        .target = "/healthz",
+        .headers = &.{},
+    };
+    try std.testing.expect(!observation.logsAccess(.ok));
+    try std.testing.expect(observation.logsAccess(.internal_server_error));
+    try std.testing.expect(observation.logsAccess(.method_not_allowed));
+
+    var loud = observation;
+    loud.quiet = false;
+    try std.testing.expect(loud.logsAccess(.ok));
+}
+
+test "a quiet route is left out of the request metrics" {
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    const routes = [_]router.Route{
+        .{ .method = .GET, .path = "/healthz", .handler = okHandler, .quiet = true },
+        .{ .method = .GET, .path = "/api/memory", .handler = okHandler },
+    };
+    for ([_][]const u8{ "/healthz", "/api/memory" }) |path| {
+        const route = matchRoute(&routes, path).?;
+        const observation: Observation = .{
+            .registry = if (route.quiet) null else &registry,
+            .quiet = route.quiet,
+            .timer = .start(std.testing.io),
+            .peer_ip = "192.0.2.1",
+            .client_ip = "192.0.2.1",
+            .method = "GET",
+            .route = route.path,
+            .target = path,
+            .headers = &.{},
+        };
+        observation.begin();
+        observation.count(.ok, std.time.ns_per_ms);
+        observation.end();
+    }
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "route=\"/healthz\"") == null);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_http_requests_total{method=\"GET\",route=\"/api/memory\",status=\"200\"} 1\n") != null);
+}
+
+fn okHandler(_: *router.App, _: *router.RequestContext) router.AppError!router.Response {
+    return router.Response.text(.ok, "ok");
 }

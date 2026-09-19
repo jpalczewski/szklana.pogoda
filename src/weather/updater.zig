@@ -93,6 +93,15 @@ const warning_sources = [_]Source(warnings.Warning){
     .{ .label = "hydro warning", .fetch = &imgw.warnings.hydro.fetch, .deinit = &warnings.deinitWarnings, .record = &recordWarningBatch, .max_age_seconds = freshness.hydro_seconds },
 };
 
+/// Makes every source's series exist before its first poll ends. A source that
+/// never succeeds then reports a last success of 0 and counters at 0, which an
+/// alert can act on, instead of no series at all.
+pub fn declareMetrics(registry: *metrics.Registry) void {
+    for (measurement_sources) |source| registry.declarePollSource(source.label);
+    registry.declarePollSource(hydro_source.label);
+    for (warning_sources) |source| registry.declarePollSource(source.label);
+}
+
 /// `scratch` backs the temporary memory of a poll and nothing else: a poll
 /// downloads a few megabytes, decodes them and writes them to the store, and
 /// every byte of that is dead once the product is stored. `main` therefore
@@ -433,5 +442,19 @@ test "measurement source labels are known products" {
     // have to name the products the same way.
     for (measurement_sources) |source| {
         try std.testing.expect(model.isObservationSource(source.label));
+    }
+}
+
+test "every polled source has its series declared before the first poll" {
+    var registry = metrics.Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    declareMetrics(&registry);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    for ([_][]const u8{ "synop", "meteo", "hydro", "meteo warning", "hydro warning" }) |label| {
+        var expected: [96]u8 = undefined;
+        const line = try std.fmt.bufPrint(&expected, "szklana_pogoda_poll_last_success_timestamp_seconds{{source=\"{s}\"}} 0\n", .{label});
+        try std.testing.expect(std.mem.find(u8, rendered, line) != null);
     }
 }

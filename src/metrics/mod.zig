@@ -235,6 +235,39 @@ pub const Registry = struct {
         self.* = undefined;
     }
 
+    /// Makes the series of a polled source exist before its first poll ends,
+    /// with every counter at 0 and the last success at 0. A series that only
+    /// appears once something happens cannot be alerted on: `time() -
+    /// last_success` and `rate(errors)` both evaluate to nothing for a source
+    /// that has never succeeded. At 0, "never" is an age of about the epoch.
+    pub fn declarePollSource(self: *Registry, source: []const u8) void {
+        inline for (std.enums.values(PollResult)) |result| {
+            self.families.poll_total.declare(.{ .source = source, .result = result });
+        }
+        self.families.poll_records_saved.declare(.{ .source = source });
+        self.families.poll_last_success.declare(.{ .source = source });
+    }
+
+    /// The same for the series whose labels are enums, so they are known
+    /// without asking any module: the caches and the on-demand upstreams.
+    pub fn declareUpstreams(self: *Registry) void {
+        inline for (std.enums.values(Cache)) |cache| {
+            inline for (std.enums.values(CacheResult)) |result| {
+                self.families.cache_lookups.declare(.{ .cache = cache, .result = result });
+            }
+        }
+        inline for (std.enums.values(Upstream)) |upstream| {
+            inline for (std.enums.values(UpstreamResult)) |result| {
+                self.families.upstream_requests.declare(.{ .upstream = upstream, .result = result });
+            }
+        }
+    }
+
+    /// The same for one reason of `headError`, which the listener knows.
+    pub fn declareHeadError(self: *Registry, reason: []const u8) void {
+        self.families.http_head_errors.declare(.{ .reason = reason });
+    }
+
     pub fn begin(self: *Registry, method: []const u8, route: []const u8) void {
         self.families.http_in_flight.inc(.{ .method = method, .route = route });
     }
@@ -343,6 +376,43 @@ test "registry counts unreadable request heads by reason" {
     const rendered = try registry.renderAlloc(std.testing.allocator);
     defer std.testing.allocator.free(rendered);
     try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_http_head_errors_total{reason=\"HttpHeadersInvalid\"} 2\n") != null);
+}
+
+test "declared series render at zero and are not changed by recording" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    registry.declarePollSource("meteo warning");
+    registry.declareUpstreams();
+    registry.declareHeadError("HttpHeadersInvalid");
+    registry.poll("meteo warning", .saved, std.time.ns_per_s, 2, 1_000);
+    registry.declarePollSource("meteo warning");
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    for ([_][]const u8{
+        "szklana_pogoda_poll_total{source=\"meteo warning\",result=\"fetch_failed\"} 0\n",
+        "szklana_pogoda_poll_total{source=\"meteo warning\",result=\"saved\"} 1\n",
+        "szklana_pogoda_poll_records_saved_total{source=\"meteo warning\"} 2\n",
+        "szklana_pogoda_poll_last_success_timestamp_seconds{source=\"meteo warning\"} 1000\n",
+        "szklana_pogoda_http_head_errors_total{reason=\"HttpHeadersInvalid\"} 0\n",
+        "szklana_pogoda_cache_lookups_total{cache=\"forecast\",result=\"miss\"} 0\n",
+        "szklana_pogoda_upstream_requests_total{upstream=\"openmeteo\",result=\"network_error\"} 0\n",
+    }) |expected| {
+        try std.testing.expect(std.mem.find(u8, rendered, expected) != null);
+    }
+}
+
+test "a declared source that never succeeded reports a last success of zero" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    registry.declarePollSource("hydro");
+    registry.poll("hydro", .fetch_failed, std.time.ns_per_s, 0, 1_000);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_poll_last_success_timestamp_seconds{source=\"hydro\"} 0\n") != null);
 }
 
 test "timer never runs backwards" {
