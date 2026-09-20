@@ -11,6 +11,7 @@ const Io = std.Io;
 const router = @import("../router.zig");
 const antistorm = @import("../antistorm/mod.zig");
 const account = @import("account.zig");
+const accounts = @import("../accounts/mod.zig");
 
 const Entry = struct {
     city_name: []const u8,
@@ -102,14 +103,14 @@ fn requestedCity(request: *router.RequestContext) router.AppError!*const antisto
 }
 
 const TestSite = struct {
-    store: @import("../accounts/mod.zig").Store,
+    store: accounts.Store,
     arena: std.heap.ArenaAllocator,
     app: router.App,
 
     fn init() !*TestSite {
         const site = try std.testing.allocator.create(TestSite);
         site.* = .{
-            .store = try @import("../accounts/mod.zig").Store.initMemory(),
+            .store = try accounts.Store.initMemory(),
             .arena = .init(std.testing.allocator),
             .app = .{ .max_body_bytes = 16, .io = std.testing.io },
         };
@@ -120,7 +121,9 @@ const TestSite = struct {
     fn deinit(self: *TestSite) void {
         self.arena.deinit();
         self.store.deinit();
-        std.testing.allocator.destroy(self);
+        const allocator = std.testing.allocator;
+        self.* = undefined;
+        allocator.destroy(self);
     }
 
     fn call(self: *TestSite, handler: router.Handler, method: std.http.Method, query: ?[]const u8, cookie: ?[]const u8) router.AppError!router.Response {

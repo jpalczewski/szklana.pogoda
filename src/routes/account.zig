@@ -202,7 +202,9 @@ const TestSite = struct {
     fn deinit(self: *TestSite) void {
         self.arena.deinit();
         self.store.deinit();
-        std.testing.allocator.destroy(self);
+        const allocator = std.testing.allocator;
+        self.* = undefined;
+        allocator.destroy(self);
     }
 
     fn call(self: *TestSite, handler: router.Handler, method: std.http.Method, headers: []const router.Header) router.AppError!router.Response {
