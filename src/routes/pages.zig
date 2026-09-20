@@ -7,9 +7,6 @@ const openmeteo = @import("../openmeteo/mod.zig");
 
 const style_css = @embedFile("../web/98.css");
 const app_css = @embedFile("../web/app.css");
-const app_js = @embedFile("../web/app.js");
-const alpine_js = @embedFile("../web/alpine.js");
-const qrcode_js = @embedFile("../web/qrcode.js");
 
 /// The pages link every asset as `/<file>?v=<content hash>`, so that URL never
 /// changes meaning and a browser or CDN may keep it for good.
@@ -91,17 +88,26 @@ pub fn appStyle(_: *router.App, ctx: *router.RequestContext) router.AppError!rou
     return asset(ctx, router.Response.css(app_css), i18n.versions.@"app.css");
 }
 
-pub fn appScript(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
-    return asset(ctx, router.Response.javascript(app_js), i18n.versions.@"app.js");
+/// A script the page loads: the app's own files (see the script tags in
+/// `index.html.in`, whose order is the load order) and the vendored libraries.
+fn script(comptime name: []const u8) router.Handler {
+    const body = @embedFile("../web/" ++ name);
+    return struct {
+        fn handle(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
+            return asset(ctx, router.Response.javascript(body), @field(i18n.versions, name));
+        }
+    }.handle;
 }
 
-pub fn alpineScript(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
-    return asset(ctx, router.Response.javascript(alpine_js), i18n.versions.@"alpine.js");
-}
-
-pub fn qrcodeScript(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
-    return asset(ctx, router.Response.javascript(qrcode_js), i18n.versions.@"qrcode.js");
-}
+pub const arrivalScript = script("arrival.js");
+pub const libScript = script("lib.js");
+pub const windowsScript = script("windows.js");
+pub const accountScript = script("account.js");
+pub const imgwScript = script("imgw.js");
+pub const forecastScript = script("forecast.js");
+pub const appScript = script("app.js");
+pub const alpineScript = script("alpine.js");
+pub const qrcodeScript = script("qrcode.js");
 
 /// The weather icons as one sprite of `<symbol>`s, drawn by the build from
 /// `src/web/weather_icons.txt`.
@@ -178,6 +184,12 @@ test "the served page links every asset by the hash the handlers expect" {
     const links = [_][]const u8{
         "/98.css?v=" ++ i18n.versions.@"98.css",
         "/app.css?v=" ++ i18n.versions.@"app.css",
+        "/arrival.js?v=" ++ i18n.versions.@"arrival.js",
+        "/lib.js?v=" ++ i18n.versions.@"lib.js",
+        "/windows.js?v=" ++ i18n.versions.@"windows.js",
+        "/account.js?v=" ++ i18n.versions.@"account.js",
+        "/imgw.js?v=" ++ i18n.versions.@"imgw.js",
+        "/forecast.js?v=" ++ i18n.versions.@"forecast.js",
         "/app.js?v=" ++ i18n.versions.@"app.js",
         "/alpine.js?v=" ++ i18n.versions.@"alpine.js",
         "/qrcode.js?v=" ++ i18n.versions.@"qrcode.js",
