@@ -39,7 +39,7 @@ const sweep_every_creations = 64;
 /// holds a row of it, and moving an account has to move every one of them. A
 /// test compares this list with the schema, so a table added without it fails
 /// the build instead of losing data.
-pub const owned_tables = .{"sessions"};
+pub const owned_tables = .{ "favorites", "sessions" };
 
 const orphan_users_sql = blk: {
     var sql: []const u8 = "DELETE FROM users WHERE recovery_hash IS NULL AND created_at < ?";
@@ -48,6 +48,10 @@ const orphan_users_sql = blk: {
     }
     break :blk sql;
 };
+
+/// The most cities one user may keep. It bounds a row count that a client
+/// controls, and it is far more than a person picks.
+pub const max_favorites = 50;
 
 /// What the store knows about a token.
 pub const Lookup = union(enum) {
@@ -119,6 +123,12 @@ pub const Store = struct {
             \\);
             \\CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_id);
             \\CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions (expires_at);
+            \\CREATE TABLE IF NOT EXISTS favorites (
+            \\    user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+            \\    city TEXT NOT NULL,
+            \\    created_at INTEGER NOT NULL,
+            \\    PRIMARY KEY (user_id, city)
+            \\);
         ,
             .{},
         );
@@ -177,6 +187,38 @@ pub const Store = struct {
     pub fn sweep(self: *Store, now: i64) !void {
         try self.db.exec("DELETE FROM sessions WHERE expires_at <= ?", .{}, .{now});
         try self.db.exec(orphan_users_sql, .{}, .{now - orphan_grace_seconds});
+    }
+
+    /// Adds `city` to the user's favourites; a city already there stays as it
+    /// was. `city` is the spelling of the city table, which the caller resolved:
+    /// the store keeps the name and not the table's position, because a
+    /// regenerated table shifts every position.
+    ///
+    /// The cap is checked before the insert, and two requests of one user racing
+    /// each other may pass it together. That overshoots by a row or two and
+    /// nothing depends on it being exact.
+    pub fn addFavorite(self: *Store, user_id: i64, city: []const u8, now: i64) !void {
+        const held = (try self.db.one(i64, "SELECT COUNT(*) FROM favorites WHERE user_id = ?", .{}, .{user_id})) orelse 0;
+        const already = (try self.db.one(i64, "SELECT COUNT(*) FROM favorites WHERE user_id = ? AND city = ?", .{}, .{ user_id, city })) orelse 0;
+        if (already == 0 and held >= max_favorites) return error.FavoritesFull;
+        try self.db.exec(
+            "INSERT OR IGNORE INTO favorites (user_id, city, created_at) VALUES (?, ?, ?)",
+            .{},
+            .{ user_id, city, now },
+        );
+    }
+
+    /// Removes `city`; one that was not there is not an error.
+    pub fn removeFavorite(self: *Store, user_id: i64, city: []const u8) !void {
+        try self.db.exec("DELETE FROM favorites WHERE user_id = ? AND city = ?", .{}, .{ user_id, city });
+    }
+
+    /// The user's favourite cities in the order they were added. The names and
+    /// the slice are the caller's to free.
+    pub fn favorites(self: *Store, allocator: std.mem.Allocator, user_id: i64) ![]const []const u8 {
+        var statement = try self.db.prepare("SELECT city FROM favorites WHERE user_id = ? ORDER BY created_at, city");
+        defer statement.deinit();
+        return statement.all([]const u8, allocator, .{}, .{user_id});
     }
 
     fn countRows(self: *Store, comptime table: []const u8) !i64 {
@@ -311,6 +353,76 @@ test "every table that carries a user_id is listed as owned" {
         inline for (owned_tables) |owned| listed = listed or std.mem.eql(u8, owned, name);
         try std.testing.expect(listed);
     }
+}
+
+fn freeNames(names: []const []const u8) void {
+    for (names) |name| std.testing.allocator.free(name);
+    std.testing.allocator.free(names);
+}
+
+test "favourites come back in the order they were added and add is idempotent" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const user = try store.createUser(0);
+    try store.addFavorite(user, "Zakopane", 10);
+    try store.addFavorite(user, "Gdańsk", 20);
+    try store.addFavorite(user, "Zakopane", 30);
+
+    const names = try store.favorites(std.testing.allocator, user);
+    defer freeNames(names);
+    try std.testing.expectEqual(@as(usize, 2), names.len);
+    try std.testing.expectEqualStrings("Zakopane", names[0]);
+    try std.testing.expectEqualStrings("Gdańsk", names[1]);
+}
+
+test "favourites belong to one user and removing one that is not there is fine" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const first = try store.createUser(0);
+    const second = try store.createUser(0);
+    try store.addFavorite(first, "Zakopane", 1);
+    try store.addFavorite(second, "Gdańsk", 1);
+
+    try store.removeFavorite(first, "Gdańsk");
+    try store.removeFavorite(first, "Zakopane");
+    try store.removeFavorite(first, "Zakopane");
+
+    const none = try store.favorites(std.testing.allocator, first);
+    defer freeNames(none);
+    try std.testing.expectEqual(@as(usize, 0), none.len);
+    const kept = try store.favorites(std.testing.allocator, second);
+    defer freeNames(kept);
+    try std.testing.expectEqual(@as(usize, 1), kept.len);
+}
+
+test "a user cannot keep more than the cap, but may re-add a city it has" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const user = try store.createUser(0);
+    var name_buffer: [16]u8 = undefined;
+    for (0..max_favorites) |index| {
+        try store.addFavorite(user, try std.fmt.bufPrint(&name_buffer, "City {d}", .{index}), 1);
+    }
+    try std.testing.expectError(error.FavoritesFull, store.addFavorite(user, "One more", 1));
+    try store.addFavorite(user, "City 0", 2);
+}
+
+test "the sweep keeps a user that holds a favourite" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const user = try store.createUser(0);
+    try store.addFavorite(user, "Zakopane", 0);
+    try store.sweep(session_idle_seconds * 2);
+    try std.testing.expectEqual(@as(i64, 1), try store.countRows("users"));
+}
+
+test "deleting a user removes its favourites" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const user = try store.createUser(0);
+    try store.addFavorite(user, "Zakopane", 0);
+    try store.db.exec("DELETE FROM users WHERE id = ?", .{}, .{user});
+    try std.testing.expectEqual(@as(i64, 0), try store.countRows("favorites"));
 }
 
 test "the sweep runs by itself once enough users have been created" {
