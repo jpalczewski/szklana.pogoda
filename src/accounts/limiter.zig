@@ -1,0 +1,112 @@
+//! A cap on how often one address may do something that costs a row.
+//!
+//! An anonymous account is made by whoever asks for one, so without a cap a
+//! single client can fill the accounts file. The count is per address and per
+//! fixed window, and it lives in memory: the process is a single one, and losing
+//! the counts on a restart only lets a client start a new window early.
+//!
+//! The table is bounded. When it is full of live windows, an address it cannot
+//! track is let through rather than refused, because refusing is what an
+//! attacker with many addresses would use against everyone else.
+
+const std = @import("std");
+const Io = std.Io;
+
+/// The most addresses tracked at once.
+const max_entries = 8192;
+
+const Window = struct {
+    started_at: i64,
+    count: u32,
+};
+
+pub const Limiter = struct {
+    allocator: std.mem.Allocator,
+    /// How many times one address may pass per window.
+    limit: u32,
+    window_seconds: i64,
+    mutex: Io.Mutex = .init,
+    /// Keyed by a hash of the address, so no address text is kept.
+    windows: std.AutoHashMapUnmanaged(u64, Window) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator, limit: u32, window_seconds: i64) Limiter {
+        return .{ .allocator = allocator, .limit = limit, .window_seconds = window_seconds };
+    }
+
+    pub fn deinit(self: *Limiter) void {
+        self.windows.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    /// Counts one attempt by `address` and says whether it may go ahead.
+    pub fn allow(self: *Limiter, io: Io, address: []const u8, now: i64) bool {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+
+        const key = std.hash.Wyhash.hash(0, address);
+        if (self.windows.getPtr(key)) |window| {
+            if (now - window.started_at >= self.window_seconds) {
+                window.* = .{ .started_at = now, .count = 1 };
+                return true;
+            }
+            if (window.count >= self.limit) return false;
+            window.count += 1;
+            return true;
+        }
+
+        if (self.windows.count() >= max_entries) self.dropExpired(now);
+        if (self.windows.count() >= max_entries) return true;
+        self.windows.put(self.allocator, key, .{ .started_at = now, .count = 1 }) catch return true;
+        return true;
+    }
+
+    fn dropExpired(self: *Limiter, now: i64) void {
+        var expired: std.ArrayList(u64) = .empty;
+        defer expired.deinit(self.allocator);
+        var entries = self.windows.iterator();
+        while (entries.next()) |entry| {
+            if (now - entry.value_ptr.started_at < self.window_seconds) continue;
+            expired.append(self.allocator, entry.key_ptr.*) catch return;
+        }
+        for (expired.items) |key| _ = self.windows.remove(key);
+    }
+};
+
+test "an address passes up to the limit and is refused after" {
+    var limiter: Limiter = .init(std.testing.allocator, 3, 3600);
+    defer limiter.deinit();
+    for (0..3) |_| try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 100));
+    try std.testing.expect(!limiter.allow(std.testing.io, "203.0.113.4", 101));
+    try std.testing.expect(!limiter.allow(std.testing.io, "203.0.113.4", 3699));
+}
+
+test "the count starts over when the window has passed" {
+    var limiter: Limiter = .init(std.testing.allocator, 1, 3600);
+    defer limiter.deinit();
+    try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 0));
+    try std.testing.expect(!limiter.allow(std.testing.io, "203.0.113.4", 3599));
+    try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 3600));
+}
+
+test "addresses are counted apart" {
+    var limiter: Limiter = .init(std.testing.allocator, 1, 3600);
+    defer limiter.deinit();
+    try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 0));
+    try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.5", 0));
+    try std.testing.expect(!limiter.allow(std.testing.io, "203.0.113.4", 1));
+}
+
+test "a full table drops expired windows and otherwise lets a new address through" {
+    var limiter: Limiter = .init(std.testing.allocator, 1, 3600);
+    defer limiter.deinit();
+    for (0..max_entries) |index| try limiter.windows.put(std.testing.allocator, index, .{ .started_at = 0, .count = 1 });
+
+    // Every window is still live: the newcomer is not tracked, but it passes.
+    try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 10));
+    try std.testing.expectEqual(@as(u32, max_entries), limiter.windows.count());
+
+    // Once they have expired the table makes room and tracks the address.
+    try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 4000));
+    try std.testing.expectEqual(@as(u32, 1), limiter.windows.count());
+    try std.testing.expect(!limiter.allow(std.testing.io, "203.0.113.4", 4001));
+}

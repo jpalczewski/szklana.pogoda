@@ -45,7 +45,8 @@ COPY --from=builder /src/zig-out/bin/szklana-pogoda /usr/local/bin/szklana-pogod
 
 USER szklana-pogoda
 WORKDIR /data
-ENV DATABASE_PATH=/data/weather.db
+ENV DATABASE_PATH=/data/weather.db \
+    ACCOUNTS_DATABASE_PATH=/data/accounts.db
 VOLUME ["/data"]
 
 EXPOSE 8080
