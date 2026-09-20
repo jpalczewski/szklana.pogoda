@@ -185,6 +185,33 @@ const SessionsCreated = family.Counter(
     no_labels,
 );
 
+/// Which kind of code an attempt to sign in carried. A request that was refused
+/// before its code was read has no kind, and is `unknown`.
+pub const LoginKind = enum {
+    recovery,
+    transfer,
+    unknown,
+};
+
+/// `invalid` covers a code that is malformed, unknown, spent or out of time; the
+/// server does not say which, and neither does the metric.
+pub const LoginResult = enum {
+    invalid,
+    limited,
+    succeeded,
+};
+
+const LoginLabels = struct {
+    kind: LoginKind,
+    result: LoginResult,
+};
+
+const LoginAttempts = family.Counter(
+    "szklana_pogoda_login_attempts_total",
+    "Attempts to sign in with a code, by the kind of code and how they ended.",
+    LoginLabels,
+);
+
 const no_labels = struct {};
 
 const ProcessResidentMemory = family.Gauge(
@@ -238,6 +265,7 @@ pub const Registry = struct {
         upstream_duration: UpstreamDuration,
         session_lookups: SessionLookups,
         sessions_created: SessionsCreated,
+        login_attempts: LoginAttempts,
         process_resident_memory: ProcessResidentMemory,
         process_virtual_memory: ProcessVirtualMemory,
         process_own_memory: ProcessOwnMemory,
@@ -258,6 +286,7 @@ pub const Registry = struct {
             .upstream_duration = .init(allocator),
             .session_lookups = .init(allocator),
             .sessions_created = .init(allocator),
+            .login_attempts = .init(allocator),
             .process_resident_memory = .init(allocator),
             .process_virtual_memory = .init(allocator),
             .process_own_memory = .init(allocator),
@@ -303,6 +332,15 @@ pub const Registry = struct {
             self.families.session_lookups.declare(.{ .result = result });
         }
         self.families.sessions_created.declare(.{});
+    }
+
+    /// The same for the sign-in attempts, whose labels are all known.
+    pub fn declareLogins(self: *Registry) void {
+        inline for (std.enums.values(LoginKind)) |kind| {
+            inline for (std.enums.values(LoginResult)) |result| {
+                self.families.login_attempts.declare(.{ .kind = kind, .result = result });
+            }
+        }
     }
 
     /// The same for one reason of `headError`, which the listener knows.
@@ -358,6 +396,10 @@ pub const Registry = struct {
 
     pub fn sessionLookup(self: *Registry, result: SessionResult) void {
         self.families.session_lookups.inc(.{ .result = result });
+    }
+
+    pub fn loginAttempt(self: *Registry, kind: LoginKind, result: LoginResult) void {
+        self.families.login_attempts.inc(.{ .kind = kind, .result = result });
     }
 
     pub fn sessionCreated(self: *Registry) void {
@@ -562,4 +604,26 @@ test "session series render at zero once declared and count what happens" {
     }) |expected| {
         try std.testing.expect(std.mem.find(u8, rendered, expected) != null);
     }
+}
+
+test "sign-in series render at zero once declared and count what happens" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    registry.declareLogins();
+    registry.loginAttempt(.transfer, .succeeded);
+    registry.loginAttempt(.unknown, .limited);
+    registry.loginAttempt(.unknown, .limited);
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    for ([_][]const u8{
+        "szklana_pogoda_login_attempts_total{kind=\"recovery\",result=\"invalid\"} 0\n",
+        "szklana_pogoda_login_attempts_total{kind=\"transfer\",result=\"succeeded\"} 1\n",
+        "szklana_pogoda_login_attempts_total{kind=\"unknown\",result=\"limited\"} 2\n",
+    }) |expected| {
+        try std.testing.expect(std.mem.find(u8, rendered, expected) != null);
+    }
+    // Nine series: three kinds by three results.
+    try std.testing.expectEqual(@as(usize, 9), std.mem.count(u8, rendered, "szklana_pogoda_login_attempts_total{"));
 }
