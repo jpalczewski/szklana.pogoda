@@ -11,7 +11,6 @@ const Io = std.Io;
 const router = @import("../router.zig");
 const antistorm = @import("../antistorm/mod.zig");
 const account = @import("account.zig");
-const accounts = @import("../accounts/mod.zig");
 
 const Entry = struct {
     city_name: []const u8,
@@ -102,82 +101,58 @@ fn requestedCity(request: *router.RequestContext) router.AppError!*const antisto
     return antistorm.cities.byId(found.id) orelse error.UnknownCity;
 }
 
-const TestSite = struct {
-    store: accounts.Store,
-    arena: std.heap.ArenaAllocator,
-    app: router.App,
+const testing_site = @import("account_testing.zig");
+const Site = testing_site.Site;
 
-    fn init() !*TestSite {
-        const site = try std.testing.allocator.create(TestSite);
-        site.* = .{
-            .store = try accounts.Store.initMemory(),
-            .arena = .init(std.testing.allocator),
-            .app = .{ .max_body_bytes = 16, .io = std.testing.io },
-        };
-        site.app.accounts = &site.store;
-        return site;
-    }
+/// Calls a handler as a browser on the site's own origin would, with `cookie`
+/// when it has one.
+fn call(site: *Site, handler: router.Handler, method: std.http.Method, query: ?[]const u8, cookie: ?[]const u8) router.AppError!router.Response {
+    const with_cookie = [_]router.Header{ testing_site.same_site, testing_site.local_host, .{ .name = "Cookie", .value = cookie orelse "" } };
+    return site.send(handler, .{
+        .method = method,
+        .query = query,
+        .headers = if (cookie != null) &with_cookie else with_cookie[0..2],
+    });
+}
 
-    fn destroy(self: *TestSite) void {
-        self.arena.deinit();
-        self.store.deinit();
-        std.testing.allocator.destroy(self);
-    }
-
-    fn call(self: *TestSite, handler: router.Handler, method: std.http.Method, query: ?[]const u8, cookie: ?[]const u8) router.AppError!router.Response {
-        const origin: router.Header = .{ .name = "Origin", .value = "http://localhost:8080" };
-        const host: router.Header = .{ .name = "Host", .value = "localhost:8080" };
-        const with_cookie = [_]router.Header{ origin, host, .{ .name = "Cookie", .value = cookie orelse "" } };
-        var request: router.RequestContext = .{
-            .allocator = self.arena.allocator(),
-            .method = method,
-            .path = "/api/me/favorites",
-            .query = query,
-            .headers = if (cookie != null) &with_cookie else with_cookie[0..2],
-            .body = null,
-        };
-        return handler(&self.app, &request);
-    }
-
-    /// The cookie header a browser would send back after `set_cookie`.
-    fn cookieFor(self: *TestSite, set_cookie: []const u8) ![]const u8 {
-        const start = std.mem.findScalar(u8, set_cookie, ';').?;
-        return self.arena.allocator().dupe(u8, set_cookie[0..start]);
-    }
-};
+/// The cookie header a browser would send back after `set_cookie`.
+fn cookieFor(site: *Site, set_cookie: []const u8) ![]const u8 {
+    const start = std.mem.findScalar(u8, set_cookie, ';').?;
+    return site.arena.allocator().dupe(u8, set_cookie[0..start]);
+}
 
 test "the first favourite makes the account and the cookie brings it back" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
 
-    const added = try site.call(add, .POST, "city=Zakopane", null);
+    const added = try call(site, add, .POST, "city=Zakopane", null);
     try std.testing.expect(added.set_cookie != null);
     try std.testing.expect(std.mem.startsWith(u8, added.body, "{\"favorites\":[{\"city_name\":\"Zakopane\""));
 
-    const cookie = try site.cookieFor(added.set_cookie.?);
-    const listed = try site.call(list, .GET, null, cookie);
+    const cookie = try cookieFor(site, added.set_cookie.?);
+    const listed = try call(site, list, .GET, null, cookie);
     try std.testing.expectEqualStrings(added.body, listed.body);
     try std.testing.expect(listed.set_cookie == null);
 }
 
 test "a browser with no account has no favourites and asking makes none" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
-    const listed = try site.call(list, .GET, null, null);
+    const listed = try call(site, list, .GET, null, null);
     try std.testing.expectEqualStrings("{\"favorites\":[]}", listed.body);
     try std.testing.expect(listed.set_cookie == null);
     try std.testing.expectEqual(@as(i64, 0), (try site.store.db.one(i64, "SELECT COUNT(*) FROM users", .{}, .{})).?);
 }
 
 test "a lazy or percent-encoded spelling is stored as the table's" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
-    const first = try site.call(add, .POST, "city=gorzow+wielkopolski", null);
-    const cookie = try site.cookieFor(first.set_cookie.?);
-    _ = try site.call(add, .POST, "city=Gorz%C3%B3w+Wielkopolski", cookie);
-    _ = try site.call(add, .POST, "city=GDANSK", cookie);
+    const first = try call(site, add, .POST, "city=gorzow+wielkopolski", null);
+    const cookie = try cookieFor(site, first.set_cookie.?);
+    _ = try call(site, add, .POST, "city=Gorz%C3%B3w+Wielkopolski", cookie);
+    _ = try call(site, add, .POST, "city=GDANSK", cookie);
 
-    const listed = try site.call(list, .GET, null, cookie);
+    const listed = try call(site, list, .GET, null, cookie);
     try std.testing.expect(std.mem.find(u8, listed.body, "\"city_name\":\"Gorzów Wielkopolski\"") != null);
     try std.testing.expect(std.mem.find(u8, listed.body, "\"city_name\":\"Gdańsk\"") != null);
     // Gorzów Wielkopolski was added twice and is one favourite.
@@ -185,31 +160,31 @@ test "a lazy or percent-encoded spelling is stored as the table's" {
 }
 
 test "a city outside the table, or none at all, is refused and makes no account" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
-    try std.testing.expectError(error.UnknownCity, site.call(add, .POST, "city=Atlantyda", null));
-    try std.testing.expectError(error.BadRequest, site.call(add, .POST, "city=", null));
-    try std.testing.expectError(error.BadRequest, site.call(add, .POST, null, null));
+    try std.testing.expectError(error.UnknownCity, call(site, add, .POST, "city=Atlantyda", null));
+    try std.testing.expectError(error.BadRequest, call(site, add, .POST, "city=", null));
+    try std.testing.expectError(error.BadRequest, call(site, add, .POST, null, null));
     try std.testing.expectEqual(@as(i64, 0), (try site.store.db.one(i64, "SELECT COUNT(*) FROM users", .{}, .{})).?);
 }
 
 test "removing a favourite leaves the others, and needs no account to be harmless" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
-    const first = try site.call(add, .POST, "city=Zakopane", null);
-    const cookie = try site.cookieFor(first.set_cookie.?);
-    _ = try site.call(add, .POST, "city=Gdansk", cookie);
+    const first = try call(site, add, .POST, "city=Zakopane", null);
+    const cookie = try cookieFor(site, first.set_cookie.?);
+    _ = try call(site, add, .POST, "city=Gdansk", cookie);
 
-    const after = try site.call(remove, .DELETE, "city=zakopane", cookie);
+    const after = try call(site, remove, .DELETE, "city=zakopane", cookie);
     try std.testing.expect(std.mem.find(u8, after.body, "Zakopane") == null);
     try std.testing.expect(std.mem.find(u8, after.body, "Gdańsk") != null);
 
-    const anonymous = try site.call(remove, .DELETE, "city=Gdansk", null);
+    const anonymous = try call(site, remove, .DELETE, "city=Gdansk", null);
     try std.testing.expectEqualStrings("{\"favorites\":[]}", anonymous.body);
 }
 
 test "changing favourites needs the site's origin" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     var request: router.RequestContext = .{
         .allocator = site.arena.allocator(),

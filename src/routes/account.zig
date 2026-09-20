@@ -183,56 +183,18 @@ fn nowSeconds(io: Io) i64 {
     return Io.Clock.real.now(io).toSeconds();
 }
 
-const TestSite = struct {
-    store: accounts.Store,
-    arena: std.heap.ArenaAllocator,
-    app: router.App,
-
-    fn init() !*TestSite {
-        const site = try std.testing.allocator.create(TestSite);
-        site.* = .{
-            .store = try accounts.Store.initMemory(),
-            .arena = .init(std.testing.allocator),
-            .app = .{ .max_body_bytes = 16, .io = std.testing.io },
-        };
-        site.app.accounts = &site.store;
-        return site;
-    }
-
-    fn destroy(self: *TestSite) void {
-        self.arena.deinit();
-        self.store.deinit();
-        std.testing.allocator.destroy(self);
-    }
-
-    fn call(self: *TestSite, handler: router.Handler, method: std.http.Method, headers: []const router.Header) router.AppError!router.Response {
-        var request: router.RequestContext = .{
-            .allocator = self.arena.allocator(),
-            .method = method,
-            .path = "/api/me",
-            .query = null,
-            .headers = headers,
-            .body = null,
-        };
-        return handler(&self.app, &request);
-    }
-};
-
-/// The token a `Set-Cookie` value carries, which the next request sends back.
-fn tokenOf(set_cookie: []const u8) []const u8 {
-    const start = std.mem.findScalar(u8, set_cookie, '=').? + 1;
-    return set_cookie[start..][0..accounts.token.text_len];
-}
-
 fn echoUser(_: *router.App, request: *router.RequestContext, session: Session) router.AppError!router.Response {
     return router.Response.jsonValue(request.allocator, .ok, .{ .user = session.user_id });
 }
 
-const same_site: router.Header = .{ .name = "Origin", .value = "http://localhost:8080" };
-const local_host: router.Header = .{ .name = "Host", .value = "localhost:8080" };
+const testing_site = @import("account_testing.zig");
+const Site = testing_site.Site;
+const same_site = testing_site.same_site;
+const local_host = testing_site.local_host;
+const tokenOf = testing_site.tokenOf;
 
 test "a request without a cookie has no session and the answer is not cacheable" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
 
     const response = try site.call(sessionStatus, .GET, &.{});
@@ -242,7 +204,7 @@ test "a request without a cookie has no session and the answer is not cacheable"
 }
 
 test "ensure makes a user on the first request and recognises the browser after" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     const keep = ensure(echoUser);
 
@@ -262,7 +224,7 @@ test "ensure makes a user on the first request and recognises the browser after"
 }
 
 test "require answers 401 without a session and runs the handler with one" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     try std.testing.expectError(error.Unauthorized, site.call(require(echoUser), .GET, &.{}));
 
@@ -274,7 +236,7 @@ test "require answers 401 without a session and runs the handler with one" {
 }
 
 test "a cookie that is not a token, or that nobody issued, is no session" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     try std.testing.expectEqualStrings("{\"session\":false}", (try site.call(sessionStatus, .GET, &.{.{ .name = "Cookie", .value = "sid=garbage" }})).body);
     const forged = "sid=" ++ "A" ** accounts.token.text_len;
@@ -282,7 +244,7 @@ test "a cookie that is not a token, or that nobody issued, is no session" {
 }
 
 test "a request that changes state must come from the site's own origin" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     const keep = ensure(echoUser);
 
@@ -293,7 +255,7 @@ test "a request that changes state must come from the site's own origin" {
 }
 
 test "with a configured origin only that origin is accepted" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     site.app.public_origin = "https://szklana.pogoda";
     site.app.cookie_policy = .secure;
@@ -307,7 +269,7 @@ test "with a configured origin only that origin is accepted" {
 }
 
 test "signing out ends the session, clears the cookie and needs the site's origin" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     const created = try site.call(ensure(echoUser), .POST, &.{ same_site, local_host });
     var cookie_header_buffer: [64]u8 = undefined;
@@ -324,7 +286,7 @@ test "signing out ends the session, clears the cookie and needs the site's origi
 }
 
 test "one address may make only so many accounts, and known browsers do not count" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     var limiter: accounts.Limiter = .init(std.testing.allocator, 2, 3600, .allow);
     defer limiter.deinit();
