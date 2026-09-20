@@ -1,0 +1,39 @@
+{# The dialog that lists IMGW's stations and warnings and Antistorm's cities. #}
+{% call "dialog" name=imgw title="{{ imgw_title }}" button="{{ imgw_button }}" %}
+  <menu role="tablist" aria-label="{{ imgw_title }}">
+    {% include "imgw_tab" value=synop label="{{ imgw_tab_synop }}" %}
+    {% include "imgw_tab" value=hydro label="{{ imgw_tab_hydro }}" %}
+    {% include "imgw_tab" value=meteo label="{{ imgw_tab_meteo }}" %}
+    {% include "imgw_tab" value=warnings label="{{ imgw_tab_warnings }}" %}
+    {% include "imgw_tab" value=storm label="{{ imgw_tab_storm }}" %}
+  </menu>
+  <section
+    class="window imgw-tab-body"
+    id="imgw-panel"
+    role="tabpanel"
+    :aria-labelledby="`imgw-tab-${tab}`"
+  >
+    <div class="field-row imgw-search">
+      <label :for="`imgw-search-${tab}`">{{ imgw_search }}</label>
+      <input
+        type="search"
+        class="imgw-search-input"
+        :id="`imgw-search-${tab}`"
+        x-ref="search"
+        x-model="query[tab]"
+        :placeholder="search_placeholder"
+      />
+      <button
+        type="button"
+        class="imgw-clear"
+        :disabled="query[tab].length === 0"
+        aria-label="{{ imgw_clear }}"
+        title="{{ imgw_clear }}"
+        @click="clear_search"
+      >×</button>
+    </div>
+    {% include "imgw_stations" %}
+    {% include "imgw_warnings" %}
+    {% include "imgw_storm" %}
+  </section>
+{% endcall %}

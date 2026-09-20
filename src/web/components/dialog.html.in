@@ -1,0 +1,48 @@
+{# A modal dialog with the button that opens it. `name` picks the Alpine
+   component and the `<name>-panel`, `<name>-window` and `<name>-title` hooks
+   that app.css styles; `title` and `button` are the (translated) texts, and
+   `attrs` adds attributes to the panel. The body is the caller's block. #}
+{% params name, title, button, attrs="" %}
+<div class="{{ name }}-panel" x-data="{{ name }}" @keydown.escape.window="hide" {{ attrs }}>
+  <button
+    type="button"
+    x-ref="launcher"
+    aria-haspopup="dialog"
+    :aria-expanded="open ? 'true' : 'false'"
+    @click="show"
+  >{{ button }}</button>
+  <div
+    class="modal-backdrop"
+    x-show="open"
+    x-cloak
+    @pointerdown.self="press_backdrop"
+    @pointerup.self="release_backdrop"
+    @pointerup.window="pressed_backdrop = false"
+  >
+    <div
+      class="window {{ name }}-window"
+      x-ref="dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="{{ name }}-title"
+      :style="`transform: translate(${offset.x}px, ${offset.y}px)`"
+      @pointerdown="pressed_backdrop = false"
+    >
+      <div
+        class="title-bar"
+        @pointerdown="start_drag"
+        @pointermove="move_drag"
+        @pointerup="end_drag"
+        @pointercancel="end_drag"
+      >
+        <div class="title-bar-text" id="{{ name }}-title">{{ title }}</div>
+        <div class="title-bar-controls">
+          <button type="button" class="close" x-ref="closeButton" aria-label="{{ close }}" @click="hide"></button>
+        </div>
+      </div>
+      <div class="window-body">
+        {{ caller() }}
+      </div>
+    </div>
+  </div>
+</div>

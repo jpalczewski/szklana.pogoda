@@ -1,4 +1,5 @@
 const std = @import("std");
+const compression = @import("compression");
 
 const max_file_bytes = 1024 * 1024;
 
@@ -7,6 +8,50 @@ const max_file_bytes = 1024 * 1024;
 /// changes exactly when the asset does.
 const version_prefix = "version:";
 
+/// A component file, `src/web/components/<name>.html.in`, is a template of its
+/// own that the page splices in with `{% include "name" %}` or
+/// `{% call "name" %}…{% endcall %}`.
+const component_suffix = ".html.in";
+
+/// A stylesheet that names other assets by their hash is a template of its own,
+/// `<name>.css.in`, rendered into `<name>` (with no locale: it has no words).
+const stylesheet_suffix = ".css.in";
+
+/// Fonts are compressed already; gzip would only add its header.
+const precompressed_suffix = ".woff2";
+
+/// Components may include components; a component that includes itself, or two
+/// that include each other, would never finish expanding.
+const max_component_depth = 16;
+
+/// Space inside a tag: around a key, and between a statement and its arguments.
+const tag_space = " \t\r\n";
+
+/// What may stand between two arguments: space, and an optional comma.
+const argument_separators = tag_space ++ ",";
+
+/// What the build spends on each embedded file: the server sends it to every
+/// client that accepts gzip, so it is worth the slowest setting.
+const gzip_options = compression.Options.best;
+
+/// One embedded file in gzip form, keyed like `AssetVersion` by its file name.
+const Gzipped = struct {
+    name: []const u8,
+    bytes: []u8,
+};
+
+/// A stylesheet after `render`, keyed by the name it is served under.
+const RenderedStylesheet = struct {
+    name: []const u8,
+    bytes: []u8,
+};
+
+/// A `<name>.css.in` template as read, before `render` fills in the hashes.
+const StylesheetTemplate = struct {
+    name: []const u8,
+    source: []u8,
+};
+
 /// The content hash of one browser asset, keyed by its file name.
 const AssetVersion = struct {
     name: []const u8,
@@ -14,10 +59,24 @@ const AssetVersion = struct {
 };
 
 /// Arguments: template, pl locale, en locale, output file, the weather icon
-/// source, then every browser asset the template links. Each is a build input,
-/// so editing one re-renders the page with its new hash. The icon source is
+/// source, then every other build input: the components the template includes
+/// (files named `*.html.in`), the stylesheet templates (`*.css.in`) and every
+/// browser asset the page links. Each is a build input, so editing one
+/// re-renders the page, with its new hash for an asset. The icon source is
 /// rendered here into `/icons.svg` and `/favicon.svg`, which are hashed and
 /// linked like any asset.
+///
+/// A `<name>.css.in` file is rendered into the stylesheet `<name>`, emitted as
+/// `stylesheets.<name>`: it can link a font or an image by its content hash
+/// (`{{ version:<file> }}`), and its own hash covers the result.
+///
+/// Every file the server sends, except one that is compressed already, is also
+/// written in gzip form as `gzipped.<name>`, next to `versions.<name>`: the
+/// build can afford the slowest setting once, and the server should not
+/// compress the same bytes for every request.
+///
+/// The page is made in two passes: `expandComponents` turns the template and
+/// its components into one flat template, then `render` fills in a locale.
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len < 6) return error.InvalidArguments;
@@ -38,17 +97,68 @@ pub fn main(init: std.process.Init) !void {
 
     var versions: std.ArrayList(AssetVersion) = .empty;
     defer versions.deinit(allocator);
+    var gzipped: std.ArrayList(Gzipped) = .empty;
+    defer {
+        for (gzipped.items) |file| allocator.free(file.bytes);
+        gzipped.deinit(allocator);
+    }
+    var components: std.ArrayList(Component) = .empty;
+    defer {
+        for (components.items) |component| allocator.free(component.source);
+        components.deinit(allocator);
+    }
+    var templates: std.ArrayList(StylesheetTemplate) = .empty;
+    defer {
+        for (templates.items) |template_file| allocator.free(template_file.source);
+        templates.deinit(allocator);
+    }
     for (args[6..]) |path| {
-        const asset = try cwd.readFileAlloc(init.io, path, allocator, .limited(max_file_bytes));
-        defer allocator.free(asset);
-        try versions.append(allocator, .{ .name = std.Io.Dir.path.basename(path), .hash = std.hash.Wyhash.hash(0, asset) });
+        const contents = try cwd.readFileAlloc(init.io, path, allocator, .limited(max_file_bytes));
+        const file_name = std.Io.Dir.path.basename(path);
+        if (std.mem.endsWith(u8, file_name, component_suffix)) {
+            const name = file_name[0 .. file_name.len - component_suffix.len];
+            for (components.items) |known| {
+                if (std.mem.eql(u8, known.name, name)) return error.DuplicateComponent;
+            }
+            try components.append(allocator, .{ .name = name, .source = contents });
+        } else if (std.mem.endsWith(u8, file_name, stylesheet_suffix)) {
+            const name = file_name[0 .. file_name.len - ".in".len];
+            try templates.append(allocator, .{ .name = name, .source = contents });
+        } else {
+            defer allocator.free(contents);
+            try versions.append(allocator, .{ .name = file_name, .hash = std.hash.Wyhash.hash(0, contents) });
+            if (!std.mem.endsWith(u8, file_name, precompressed_suffix)) {
+                try gzipped.append(allocator, .{ .name = file_name, .bytes = try compression.gzip(allocator, contents, gzip_options) });
+            }
+        }
     }
     try versions.append(allocator, .{ .name = "icons.svg", .hash = std.hash.Wyhash.hash(0, icons.sprite) });
     try versions.append(allocator, .{ .name = "favicon.svg", .hash = std.hash.Wyhash.hash(0, icons.favicon) });
+    try gzipped.append(allocator, .{ .name = "icons.svg", .bytes = try compression.gzip(allocator, icons.sprite, gzip_options) });
+    try gzipped.append(allocator, .{ .name = "favicon.svg", .bytes = try compression.gzip(allocator, icons.favicon, gzip_options) });
 
-    const pl_html = try render(allocator, template, pl_locale, versions.items);
+    // A stylesheet is rendered once every plain asset has its hash, and gets
+    // its own after that, so the page links the hash of what the server sends.
+    var stylesheets: std.ArrayList(RenderedStylesheet) = .empty;
+    defer {
+        for (stylesheets.items) |sheet| allocator.free(sheet.bytes);
+        stylesheets.deinit(allocator);
+    }
+    for (templates.items) |template_file| {
+        const css = try render(allocator, template_file.source, "{}", versions.items);
+        try stylesheets.append(allocator, .{ .name = template_file.name, .bytes = css });
+    }
+    for (stylesheets.items) |sheet| {
+        try versions.append(allocator, .{ .name = sheet.name, .hash = std.hash.Wyhash.hash(0, sheet.bytes) });
+        try gzipped.append(allocator, .{ .name = sheet.name, .bytes = try compression.gzip(allocator, sheet.bytes, gzip_options) });
+    }
+
+    const page = try expandComponents(allocator, template, components.items);
+    defer allocator.free(page);
+
+    const pl_html = try render(allocator, page, pl_locale, versions.items);
     defer allocator.free(pl_html);
-    const en_html = try render(allocator, template, en_locale, versions.items);
+    const en_html = try render(allocator, page, en_locale, versions.items);
     defer allocator.free(en_html);
 
     var generated: std.Io.Writer.Allocating = .init(allocator);
@@ -74,6 +184,30 @@ pub fn main(init: std.process.Init) !void {
         );
     }
     try generated.writer.writeAll("};\n");
+    try generated.writer.writeAll("pub const stylesheets = struct {\n");
+    for (stylesheets.items) |sheet| {
+        try generated.writer.print("    pub const {f} = \"{f}\";\n", .{ std.zig.fmtId(sheet.name), std.zig.fmtString(sheet.bytes) });
+    }
+    try generated.writer.writeAll("};\n");
+
+    const pl_gzip = try compression.gzip(allocator, pl_html, gzip_options);
+    defer allocator.free(pl_gzip);
+    const en_gzip = try compression.gzip(allocator, en_html, gzip_options);
+    defer allocator.free(en_gzip);
+    try generated.writer.print(
+        "pub const gzipped = struct {{\n" ++
+            "    pub const pl_html = \"{f}\";\n" ++
+            "    pub const en_html = \"{f}\";\n",
+        .{ std.zig.fmtString(pl_gzip), std.zig.fmtString(en_gzip) },
+    );
+    for (gzipped.items) |file| {
+        try generated.writer.print(
+            "    pub const {f} = \"{f}\";\n",
+            .{ std.zig.fmtId(file.name), std.zig.fmtString(file.bytes) },
+        );
+    }
+    try generated.writer.writeAll("};\n");
+
     try writeStrings(allocator, &generated.writer, "pl", pl_locale);
     try writeStrings(allocator, &generated.writer, "en", en_locale);
 
@@ -109,6 +243,331 @@ fn writeStrings(
     try writer.writeAll("};\n");
 }
 
+/// A component's parameter, from its `{% params %}` line: a name, and the value
+/// a call gets when it passes none (null for a parameter that must be passed).
+const Parameter = struct {
+    name: []const u8,
+    default: ?[]const u8,
+};
+
+/// What `{{ name }}` and `{{ caller() }}` stand for inside one component: the
+/// arguments its call passed, and the body of a `{% call %}` block.
+const Frame = struct {
+    arguments: []const Argument = &.{},
+    caller: ?[]const u8 = null,
+
+    fn value(self: Frame, name: []const u8) ?[]const u8 {
+        for (self.arguments) |argument| {
+            if (std.mem.eql(u8, argument.name, name)) return argument.value;
+        }
+        return null;
+    }
+};
+
+const Argument = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+const Component = struct {
+    name: []const u8,
+    source: []const u8,
+};
+
+const ExpandError = error{
+    OutOfMemory,
+    UnclosedPlaceholder,
+    UnknownStatement,
+    UnknownComponent,
+    BadArgument,
+    MissingArgument,
+    UnknownArgument,
+    MissingCaller,
+    UnusedCaller,
+    UnclosedCall,
+    UnexpectedEndCall,
+    ComponentsTooDeep,
+};
+
+/// The first pass: splices every component into the template and returns one
+/// flat template, which `render` then fills in for each locale.
+///
+///     {% include "detail" label="{{ imgw_river }}" value="river" %}
+///     {% call "dialog" name="about" %} …the dialog's body… {% endcall %}
+///
+/// A component starts with `{% params name, title, attrs="" %}` when it takes
+/// arguments; a parameter with a default is optional, any other is required, and
+/// a call that passes something undeclared is an error, so a misspelt argument
+/// cannot go unnoticed. Inside the component `{{ name }}` stands for the
+/// argument, raw and unescaped because the template's author wrote it, and
+/// `{{ caller() }}` for the body of a `call` block. An argument may itself hold
+/// a `{{ key }}`, which passes through and is translated by `render`; it is
+/// expanded in the caller's scope, so a body and an argument see the
+/// parameters of the component that wrote them. `{# … #}` is a comment and
+/// leaves no trace. `{% dataset a_b, c %}` writes the `data-*` attributes for
+/// those keys (see `appendDataset`). Anything else in `{{ … }}` is left for `render`, so a
+/// parameter shadows a translation key of the same name inside its component.
+fn expandComponents(allocator: std.mem.Allocator, template: []const u8, components: []const Component) ![]u8 {
+    var arena: std.heap.ArenaAllocator = .init(allocator);
+    defer arena.deinit();
+
+    const expander: Expander = .{ .arena = arena.allocator(), .components = components };
+    const expanded = try expander.expand(template, .{}, 0);
+    return allocator.dupe(u8, expanded);
+}
+
+/// Everything the expansion allocates lives in `arena`, which the caller frees
+/// in one go; only the final page is copied out.
+const Expander = struct {
+    arena: std.mem.Allocator,
+    components: []const Component,
+
+    fn expand(self: Expander, template: []const u8, frame: Frame, depth: usize) ExpandError![]u8 {
+        var output: std.ArrayList(u8) = .empty;
+        var position: usize = 0;
+        while (findTag(template, position)) |open| {
+            try output.appendSlice(self.arena, template[position..open]);
+            const tag = try readTag(template, open);
+            position = tag.end;
+            switch (tag.kind) {
+                .comment => position = skipLineBreak(template, tag.end),
+                .variable => {
+                    if (std.mem.eql(u8, tag.inner, "caller()")) {
+                        try output.appendSlice(self.arena, frame.caller orelse return error.MissingCaller);
+                    } else if (frame.value(tag.inner)) |value| {
+                        try output.appendSlice(self.arena, value);
+                    } else {
+                        try output.appendSlice(self.arena, template[open..tag.end]);
+                    }
+                },
+                .statement => {
+                    const statement = splitStatement(tag.inner);
+                    if (std.mem.eql(u8, statement.word, "include")) {
+                        try output.appendSlice(self.arena, try self.include(statement.rest, null, frame, depth));
+                    } else if (std.mem.eql(u8, statement.word, "call")) {
+                        const end = try endOfCall(template, tag.end);
+                        const body = template[tag.end..end.start];
+                        try output.appendSlice(self.arena, try self.include(statement.rest, body, frame, depth));
+                        position = end.after;
+                    } else if (std.mem.eql(u8, statement.word, "dataset")) {
+                        try appendDataset(&output, self.arena, statement.rest);
+                    } else if (std.mem.eql(u8, statement.word, "params")) {
+                        position = skipLineBreak(template, tag.end);
+                    } else if (std.mem.eql(u8, statement.word, "endcall")) {
+                        return error.UnexpectedEndCall;
+                    } else {
+                        return error.UnknownStatement;
+                    }
+                },
+            }
+        }
+        try output.appendSlice(self.arena, template[position..]);
+        return output.items;
+    }
+
+    /// One component call. `body` is the text of a `call` block, expanded here,
+    /// in the caller's scope, before the component sees it.
+    fn include(self: Expander, call: []const u8, body: ?[]const u8, caller_frame: Frame, depth: usize) ExpandError![]u8 {
+        if (depth >= max_component_depth) return error.ComponentsTooDeep;
+
+        var rest = call;
+        const name = try takeValue(&rest);
+        const component = self.find(name) orelse return error.UnknownComponent;
+        if (body != null and !usesCaller(component.source)) return error.UnusedCaller;
+        const parameters = try self.parametersOf(component.source);
+
+        var arguments: std.ArrayList(Argument) = .empty;
+        while (try takePair(&rest)) |pair| {
+            const raw = pair.value orelse return error.BadArgument;
+            if (findParameter(parameters, pair.name) == null) return error.UnknownArgument;
+            try arguments.append(self.arena, .{ .name = pair.name, .value = try self.expand(raw, caller_frame, depth) });
+        }
+        for (parameters) |parameter| {
+            if ((Frame{ .arguments = arguments.items }).value(parameter.name) != null) continue;
+            try arguments.append(self.arena, .{ .name = parameter.name, .value = parameter.default orelse return error.MissingArgument });
+        }
+
+        const caller = if (body) |text| try self.expand(text, caller_frame, depth) else null;
+        return self.expand(component.source, .{ .arguments = arguments.items, .caller = caller }, depth + 1);
+    }
+
+    fn find(self: Expander, name: []const u8) ?Component {
+        for (self.components) |component| {
+            if (std.mem.eql(u8, component.name, name)) return component;
+        }
+        return null;
+    }
+
+    fn parametersOf(self: Expander, source: []const u8) ExpandError![]const Parameter {
+        var position: usize = 0;
+        while (findTag(source, position)) |open| {
+            const tag = try readTag(source, open);
+            position = tag.end;
+            if (tag.kind != .statement) continue;
+            const statement = splitStatement(tag.inner);
+            if (!std.mem.eql(u8, statement.word, "params")) continue;
+
+            var parameters: std.ArrayList(Parameter) = .empty;
+            var rest = statement.rest;
+            while (try takePair(&rest)) |pair| {
+                try parameters.append(self.arena, .{ .name = pair.name, .default = pair.value });
+            }
+            return parameters.items;
+        }
+        return &.{};
+    }
+};
+
+/// Whether a component places the body of a `call` block.
+fn usesCaller(source: []const u8) bool {
+    var position: usize = 0;
+    while (findTag(source, position)) |open| {
+        const tag = readTag(source, open) catch return false;
+        position = tag.end;
+        if (tag.kind == .variable and std.mem.eql(u8, tag.inner, "caller()")) return true;
+    }
+    return false;
+}
+
+/// `{% dataset http_error, imgw_unavailable %}` writes one attribute for each
+/// key, `data-http-error="{{ http_error }}"`, so the page hands the scripts a
+/// string as `dataset.httpError` without spelling its name twice. The key is
+/// translated by `render` like any other, so a key that no locale has fails the
+/// build.
+fn appendDataset(output: *std.ArrayList(u8), allocator: std.mem.Allocator, keys: []const u8) ExpandError!void {
+    var rest = keys;
+    var first = true;
+    while (true) {
+        rest = std.mem.trimStart(u8, rest, argument_separators);
+        if (rest.len == 0) break;
+        const key = try takeValue(&rest);
+        if (!first) try output.append(allocator, '\n');
+        first = false;
+        try output.appendSlice(allocator, "data-");
+        for (key) |letter| try output.append(allocator, if (letter == '_') '-' else letter);
+        try output.print(allocator, "=\"{{{{ {s} }}}}\"", .{key});
+    }
+}
+
+fn findParameter(parameters: []const Parameter, name: []const u8) ?Parameter {
+    for (parameters) |parameter| {
+        if (std.mem.eql(u8, parameter.name, name)) return parameter;
+    }
+    return null;
+}
+
+const TagKind = enum { comment, statement, variable };
+
+const Tag = struct {
+    kind: TagKind,
+    /// What stands between the delimiters, without the space around it.
+    inner: []const u8,
+    /// The index just past the closing delimiter.
+    end: usize,
+};
+
+/// The index of the next `{{`, `{%` or `{#` at or after `from`.
+fn findTag(template: []const u8, from: usize) ?usize {
+    var position = from;
+    while (std.mem.findScalarPos(u8, template, position, '{')) |at| {
+        if (at + 1 < template.len and std.mem.findScalar(u8, "{%#", template[at + 1]) != null) return at;
+        position = at + 1;
+    }
+    return null;
+}
+
+/// The tag whose opening delimiter is at `open`, which `findTag` found.
+fn readTag(template: []const u8, open: usize) error{UnclosedPlaceholder}!Tag {
+    const kind: TagKind, const closer = switch (template[open + 1]) {
+        '{' => .{ .variable, "}}" },
+        '%' => .{ .statement, "%}" },
+        else => .{ .comment, "#}" },
+    };
+    const close = std.mem.findPos(u8, template, open + 2, closer) orelse return error.UnclosedPlaceholder;
+    return .{
+        .kind = kind,
+        .inner = std.mem.trim(u8, template[open + 2 .. close], tag_space),
+        .end = close + closer.len,
+    };
+}
+
+/// A tag that stands alone on its line should not leave an empty line behind.
+fn skipLineBreak(template: []const u8, position: usize) usize {
+    if (position < template.len and template[position] == '\n') return position + 1;
+    return position;
+}
+
+const Statement = struct {
+    word: []const u8,
+    rest: []const u8,
+};
+
+fn splitStatement(inner: []const u8) Statement {
+    const end = std.mem.findAny(u8, inner, tag_space) orelse inner.len;
+    return .{ .word = inner[0..end], .rest = std.mem.trimStart(u8, inner[end..], tag_space) };
+}
+
+const CallEnd = struct {
+    /// Where the `{% endcall %}` tag begins: the body stops here.
+    start: usize,
+    /// The index just past it.
+    after: usize,
+};
+
+/// The `{% endcall %}` that closes the `call` whose tag ends at `from`, skipping
+/// the calls nested inside its body.
+fn endOfCall(template: []const u8, from: usize) error{ UnclosedPlaceholder, UnclosedCall }!CallEnd {
+    var depth: usize = 1;
+    var position = from;
+    while (findTag(template, position)) |open| {
+        const tag = try readTag(template, open);
+        position = tag.end;
+        if (tag.kind != .statement) continue;
+        const word = splitStatement(tag.inner).word;
+        if (std.mem.eql(u8, word, "call")) {
+            depth += 1;
+        } else if (std.mem.eql(u8, word, "endcall")) {
+            depth -= 1;
+            if (depth == 0) return .{ .start = open, .after = tag.end };
+        }
+    }
+    return error.UnclosedCall;
+}
+
+const Pair = struct {
+    name: []const u8,
+    value: ?[]const u8,
+};
+
+/// The next `name` or `name=value` in a statement's arguments, moving `text`
+/// past it; null when only separators remain.
+fn takePair(text: *[]const u8) error{BadArgument}!?Pair {
+    text.* = std.mem.trimStart(u8, text.*, argument_separators);
+    if (text.*.len == 0) return null;
+
+    const name = try takeValue(text);
+    if (text.*.len == 0 or text.*[0] != '=') return .{ .name = name, .value = null };
+    text.* = text.*[1..];
+    return .{ .name = name, .value = try takeValue(text) };
+}
+
+/// A quoted string (either quote, no escapes) or a bare word, moving `text`
+/// past it. A quoted value may hold anything but its own quote, including a
+/// `{{ key }}` and the other kind of quote.
+fn takeValue(text: *[]const u8) error{BadArgument}![]const u8 {
+    const rest = std.mem.trimStart(u8, text.*, tag_space);
+    if (rest.len == 0) return error.BadArgument;
+    if (rest[0] == '"' or rest[0] == '\'') {
+        const close = std.mem.findScalarPos(u8, rest, 1, rest[0]) orelse return error.BadArgument;
+        text.* = rest[close + 1 ..];
+        return rest[1..close];
+    }
+    const end = std.mem.findAny(u8, rest, argument_separators ++ "=") orelse rest.len;
+    if (end == 0) return error.BadArgument;
+    text.* = rest[end..];
+    return rest[0..end];
+}
+
 fn render(
     allocator: std.mem.Allocator,
     template: []const u8,
@@ -134,7 +593,7 @@ fn render(
             return error.UnclosedPlaceholder;
         };
         const key_end = key_start + close_relative;
-        const key = template[key_start..key_end];
+        const key = std.mem.trim(u8, template[key_start..key_end], tag_space);
         if (key.len == 0) {
             return error.EmptyPlaceholder;
         }
@@ -432,4 +891,139 @@ test "renderIcons rejects a malformed palette colour" {
         error.BadPaletteColor,
         renderIcons(std.testing.allocator, "palette K black\nfavicon sun\nicon sun\n" ++ test_icon_rows),
     );
+}
+
+fn expectExpanded(expected: []const u8, template: []const u8, components: []const Component) !void {
+    const expanded = try expandComponents(std.testing.allocator, template, components);
+    defer std.testing.allocator.free(expanded);
+    try std.testing.expectEqualStrings(expected, expanded);
+}
+
+test "render reads a key with space around it" {
+    const rendered = try render(std.testing.allocator, "<b>{{ title }}</b>{{ version:app.js }}", "{\"title\": \"T\"}", &.{.{ .name = "app.js", .hash = 0x1 }});
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expectEqualStrings("<b>T</b>0000000000000001", rendered);
+}
+
+test "expandComponents leaves a template with no tags as it is" {
+    try expectExpanded("<p>{{ title }} {{version:a.js}}</p>", "<p>{{ title }} {{version:a.js}}</p>", &.{});
+}
+
+test "an include passes its arguments in and leaves translation keys alone" {
+    const components = [_]Component{
+        .{ .name = "row", .source = "{% params label, value %}\n<dt>{{ label }}</dt><dd>{{ value }} {{ unit }}</dd>" },
+    };
+    try expectExpanded(
+        "<dl><dt>{{ river }}</dt><dd>x.y {{ unit }}</dd></dl>",
+        "<dl>{% include \"row\" label=\"{{ river }}\" value='x.y' %}</dl>",
+        &components,
+    );
+}
+
+test "a parameter with a default may be left out" {
+    const components = [_]Component{
+        .{ .name = "box", .source = "{% params id, attrs=\"\" %}<div id=\"{{ id }}\" {{ attrs }}>" },
+    };
+    try expectExpanded("<div id=\"a\" >", "{% include \"box\" id=a %}", &components);
+    try expectExpanded("<div id=\"a\" hidden>", "{% include \"box\" id=a, attrs=hidden %}", &components);
+}
+
+test "a call without a required argument, or with an undeclared one, is an error" {
+    const components = [_]Component{.{ .name = "box", .source = "{% params id %}{{ id }}" }};
+    try std.testing.expectError(error.MissingArgument, expandComponents(std.testing.allocator, "{% include \"box\" %}", &components));
+    try std.testing.expectError(error.UnknownArgument, expandComponents(std.testing.allocator, "{% include \"box\" id=a idd=b %}", &components));
+    try std.testing.expectError(error.BadArgument, expandComponents(std.testing.allocator, "{% include \"box\" id %}", &components));
+    try std.testing.expectError(error.UnknownComponent, expandComponents(std.testing.allocator, "{% include \"nope\" %}", &components));
+}
+
+test "a call block hands its body to the component as the caller" {
+    const components = [_]Component{
+        .{ .name = "window", .source = "{% params name %}<section id=\"{{ name }}\">{{ caller() }}</section>" },
+    };
+    try expectExpanded(
+        "<section id=\"w\"><p>{{ about_body }}</p></section>",
+        "{% call \"window\" name=w %}<p>{{ about_body }}</p>{% endcall %}",
+        &components,
+    );
+}
+
+test "a body and an argument see the parameters of the component that wrote them" {
+    const components = [_]Component{
+        .{ .name = "outer", .source = "{% params name %}{% call \"inner\" id=\"{{ name }}-1\" %}[{{ name }}]{% endcall %}" },
+        .{ .name = "inner", .source = "{% params id %}<i id=\"{{ id }}\">{{ caller() }}</i>" },
+    };
+    try expectExpanded("<i id=\"a-1\">[a]</i>", "{% include \"outer\" name=a %}", &components);
+}
+
+test "calls of one component nest" {
+    const components = [_]Component{.{ .name = "b", .source = "<b>{{ caller() }}</b>" }};
+    try expectExpanded("<b>1<b>2</b>3</b>", "{% call \"b\" %}1{% call \"b\" %}2{% endcall %}3{% endcall %}", &components);
+}
+
+test "a comment leaves nothing behind, not even its line" {
+    const components = [_]Component{.{ .name = "note", .source = "{# what this is {{ for }} #}\n<hr>" }};
+    try expectExpanded("<hr>\n", "{% include \"note\" %}\n", &components);
+    try expectExpanded("a b", "a {# x #}b", &.{});
+}
+
+test "a call block that is never closed, or closed twice, is an error" {
+    const components = [_]Component{.{ .name = "b", .source = "{{ caller() }}" }};
+    try std.testing.expectError(error.UnclosedCall, expandComponents(std.testing.allocator, "{% call \"b\" %}x", &components));
+    try std.testing.expectError(error.UnexpectedEndCall, expandComponents(std.testing.allocator, "{% endcall %}", &components));
+    try std.testing.expectError(error.MissingCaller, expandComponents(std.testing.allocator, "{% include \"b\" %}", &components));
+}
+
+test "a component that includes itself is an error, not a hang" {
+    const components = [_]Component{.{ .name = "loop", .source = "{% include \"loop\" %}" }};
+    try std.testing.expectError(error.ComponentsTooDeep, expandComponents(std.testing.allocator, "{% include \"loop\" %}", &components));
+}
+
+test "an unknown statement or an unclosed tag is an error" {
+    try std.testing.expectError(error.UnknownStatement, expandComponents(std.testing.allocator, "{% for x %}", &.{}));
+    try std.testing.expectError(error.UnclosedPlaceholder, expandComponents(std.testing.allocator, "{% include \"x\"", &.{}));
+}
+
+test "an expanded page renders for a locale" {
+    const components = [_]Component{
+        .{ .name = "button", .source = "{% params label %}<button>{{ label }}</button>" },
+    };
+    const page = try expandComponents(std.testing.allocator, "{% include \"button\" label=\"{{ close }}\" %}", &components);
+    defer std.testing.allocator.free(page);
+    const rendered = try render(std.testing.allocator, page, "{\"close\": \"Close & go\"}", &.{});
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expectEqualStrings("<button>Close &amp; go</button>", rendered);
+}
+
+test "a call block that the component never places is an error" {
+    const components = [_]Component{.{ .name = "flat", .source = "<hr>" }};
+    try std.testing.expectError(error.UnusedCaller, expandComponents(std.testing.allocator, "{% call \"flat\" %}x{% endcall %}", &components));
+}
+
+test "dataset writes one attribute per key" {
+    try expectExpanded(
+        "<body data-http-error=\"{{ http_error }}\"\ndata-a=\"{{ a }}\"\ndata-imgw-storm-yes=\"{{ imgw_storm_yes }}\">",
+        "<body {% dataset http_error, a\n  imgw_storm_yes %}>",
+        &.{},
+    );
+    try expectExpanded("<body >", "<body {% dataset %}>", &.{});
+}
+
+test "dataset attributes are translated like any other key" {
+    const page = try expandComponents(std.testing.allocator, "<body {% dataset http_error %}>", &.{});
+    defer std.testing.allocator.free(page);
+    const rendered = try render(std.testing.allocator, page, "{\"http_error\": \"Blad \\\"x\\\"\"}", &.{});
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expectEqualStrings("<body data-http-error=\"Blad &quot;x&quot;\">", rendered);
+    try std.testing.expectError(error.MissingTranslation, render(std.testing.allocator, page, "{}", &.{}));
+}
+
+test "a stylesheet template gets the hash of the asset it names" {
+    const versions = [_]AssetVersion{.{ .name = "a.woff2", .hash = 0xabc }};
+    const css = try render(std.testing.allocator, "@font-face { src: url(\"/a.woff2?v={{ version:a.woff2 }}\"); }", "{}", &versions);
+    defer std.testing.allocator.free(css);
+    try std.testing.expectEqualStrings("@font-face { src: url(\"/a.woff2?v=0000000000000abc\"); }", css);
+}
+
+test "a stylesheet that names an unknown asset is an error" {
+    try std.testing.expectError(error.UnknownAsset, render(std.testing.allocator, "url({{ version:nope.woff2 }})", "{}", &.{}));
 }

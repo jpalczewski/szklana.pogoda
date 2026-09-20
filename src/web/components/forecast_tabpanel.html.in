@@ -1,0 +1,13 @@
+{# The panel of the forecast view `view`, opposite `forecast_tab`. `cloak` is
+   `x-cloak` for a panel that starts hidden. #}
+{% params view, cloak="" %}
+<section
+  class="window forecast-tab-body"
+  id="forecast-panel-{{ view }}"
+  role="tabpanel"
+  aria-labelledby="forecast-tab-{{ view }}"
+  x-show="view === '{{ view }}'"
+  {{ cloak }}
+>
+  {{ caller() }}
+</section>

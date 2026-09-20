@@ -1,0 +1,5 @@
+{# The "loading" line and the error line of a request. `busy` and `failed` are
+   Alpine expressions: whether it is running, and the error text (or empty). #}
+{% params busy, failed %}
+<p class="imgw-status" x-show="{{ busy }}" x-cloak>{{ loading }}</p>
+<p class="imgw-status" x-show="{{ failed }}" x-cloak x-text="{{ failed }}"></p>

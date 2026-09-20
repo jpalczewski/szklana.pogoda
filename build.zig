@@ -5,12 +5,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // The generator compresses what it embeds with the code the server uses for
+    // what it builds per request, so both come from one file.
+    const compression_module = b.createModule(.{
+        .root_source_file = b.path("src/compression.zig"),
+        .target = b.graph.host,
+    });
     const i18n_generator = b.addExecutable(.{
         .name = "i18n-generator",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/i18n_gen.zig"),
             .target = b.graph.host,
             .optimize = .ReleaseSafe,
+            .imports = &.{.{ .name = "compression", .module = compression_module }},
         }),
     });
     const render_i18n = b.addRunArtifact(i18n_generator);
@@ -24,8 +31,19 @@ pub fn build(b: *std.Build) void {
     // The page links each asset by a hash of its content, so the generator
     // must see the assets as inputs: as file arguments the step re-runs when
     // one changes, and a plain path string would leave the hash stale.
-    for ([_][]const u8{ "98.css", "app.css", "arrival.js", "lib.js", "windows.js", "account.js", "imgw.js", "forecast.js", "app.js", "alpine.js", "qrcode.js" }) |asset| {
+    for ([_][]const u8{ "98.css", "app.css.in", "fonts/pixelated-ms-sans-serif.woff2", "fonts/pixelated-ms-sans-serif-bold.woff2", "arrival.js", "lib.js", "windows.js", "account.js", "imgw.js", "forecast.js", "app.js", "alpine.js", "qrcode.js" }) |asset| {
         render_i18n.addFileArg(b.path(b.fmt("src/web/{s}", .{asset})));
+    }
+    // The template is assembled from these components (`{% include %}` and
+    // `{% call %}` in `index.html.in` and in each other). The generator learns
+    // a file is a component from its `.html.in` suffix, and takes its name from
+    // the rest, so a new one only needs its name added here.
+    for ([_][]const u8{
+        "about",  "account",      "detail",        "dialog",     "forecast", "forecast_tab",  "forecast_tabpanel",
+        "imgw",   "imgw_listbox", "imgw_stations", "imgw_storm", "imgw_tab", "imgw_warnings", "load_state",
+        "status",
+    }) |component| {
+        render_i18n.addFileArg(b.path(b.fmt("src/web/components/{s}.html.in", .{component})));
     }
     const i18n_module = b.createModule(.{
         .root_source_file = i18n_source,
@@ -98,6 +116,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tools/i18n_gen.zig"),
             .target = b.graph.host,
             .optimize = optimize,
+            .imports = &.{.{ .name = "compression", .module = compression_module }},
         }),
     });
     const run_i18n_tests = b.addRunArtifact(i18n_tests);

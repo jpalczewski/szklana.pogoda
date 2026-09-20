@@ -1,0 +1,37 @@
+{# The storm tab of the IMGW dialog. #}
+<div class="imgw-storm" x-show="tab === 'storm'" x-cloak>
+  {% include "load_state" busy="active.loading" failed="active.error" %}
+  {% call "imgw_listbox" id=storm item=city count="{{ imgw_storm_count }}" %}{{ imgw_storm_list }}{% endcall %}
+  {% call "status" when="!active.loading && !active.error && filtered.length === 0" %}{{ imgw_storm_empty }}{% endcall %}
+  <div class="field-row imgw-storm-fetch">
+    <button
+      type="button"
+      :disabled="!active.selected || active.detail_loading"
+      @click="load_storm"
+    >{{ imgw_storm_fetch }}</button>
+    <span
+      class="imgw-status"
+      x-show="!active.selected && !active.loading"
+      x-cloak
+    >{{ imgw_storm_no_selection }}</span>
+  </div>
+  <div class="imgw-details" x-show="active.selected" x-cloak>
+    <h3 class="imgw-details-title">
+      {{ imgw_storm_detail }} <span x-text="format_value(active.selected?.city_name)"></span>
+    </h3>
+    {% include "load_state" busy="active.detail_loading" failed="active.detail_error" %}
+    <dl class="imgw-detail-list" x-show="active.detail" x-cloak>
+      {% include "detail" label="{{ imgw_storm_city_id }}" value="format_value(active.detail?.city_id)" %}
+      {% include "detail" label="{{ imgw_storm_city_name }}" value="format_value(active.detail?.city_name)" %}
+      {% include "detail" label="{{ imgw_storm_probability }}" value="format_value(active.detail?.storm_probability, '%')" %}
+      {% include "detail" label="{{ imgw_storm_minutes }}" value="format_storm_minutes(active.detail?.storm_minutes)" %}
+      {% include "detail" label="{{ imgw_storm_alarm }}" value="active.detail ? format_flag(active.detail.storm_alarm) : '—'" %}
+      {% include "detail" label="{{ imgw_storm_rain_probability }}" value="format_value(active.detail?.rain_probability, '%')" %}
+      {% include "detail" label="{{ imgw_storm_rain_minutes }}" value="format_storm_minutes(active.detail?.rain_minutes)" %}
+      {% include "detail" label="{{ imgw_storm_rain_alarm }}" value="active.detail ? format_flag(active.detail.rain_alarm) : '—'" %}
+      {% include "detail" label="{{ imgw_storm_active }}" value="format_value(active.detail?.active_storm)" %}
+      {% include "detail" label="{{ imgw_coordinates }}" value="coordinates(active.detail)" %}
+      {% include "detail" label="{{ imgw_storm_fetched }}" value="describe_age(active.detail)" %}
+    </dl>
+  </div>
+</div>

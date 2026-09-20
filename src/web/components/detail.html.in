@@ -1,0 +1,5 @@
+{# One row of a details list: `label` is the (translated) term and `value` an
+   Alpine expression for its text. #}
+{% params label, value %}
+<dt>{{ label }}</dt>
+<dd x-text="{{ value }}"></dd>

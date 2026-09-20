@@ -1,0 +1,22 @@
+{# The about dialog: credits and the process's memory. #}
+{% call "dialog" name=about title="{{ about_title }}" button="{{ about_button }}" %}
+  <p>{{ about_body }}</p>
+  <p class="about-attribution">{{ about_source }}</p>
+  <p class="about-attribution">{{ about_processed }}</p>
+  <p class="about-attribution">{{ about_antistorm }} (<a href="https://antistorm.eu/" rel="noopener noreferrer">https://antistorm.eu/</a>).</p>
+  <p class="about-attribution">{{ about_openmeteo }} (<a href="https://open-meteo.com/" rel="noopener noreferrer">https://open-meteo.com/</a>).</p>
+  <fieldset class="memory-panel">
+    <legend>{{ memory_title }}</legend>
+    <p class="memory-status" x-show="loading" x-cloak>{{ loading }}</p>
+    <p class="memory-status" x-show="error" x-cloak x-text="error"></p>
+    <dl class="memory-stats" x-show="usage" x-cloak>
+      {% include "detail" label="{{ memory_own }}" value="format_bytes(usage?.own_bytes)" %}
+      {% include "detail" label="{{ memory_rss }}" value="format_bytes(usage?.rss_bytes)" %}
+    </dl>
+    <p class="memory-note">{{ memory_note }}</p>
+    <button type="button" @click="load" :disabled="loading">{{ memory_refresh }}</button>
+  </fieldset>
+  <div class="field-row about-actions">
+    <button type="button" @click="hide">{{ close }}</button>
+  </div>
+{% endcall %}

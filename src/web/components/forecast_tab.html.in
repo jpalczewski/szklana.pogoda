@@ -1,0 +1,13 @@
+{# One tab of the forecast, which shows the view `value`. #}
+{% params value, label %}
+<li
+  role="tab"
+  id="forecast-tab-{{ value }}"
+  data-view="{{ value }}"
+  aria-controls="forecast-panel-{{ value }}"
+  :aria-selected="view === '{{ value }}' ? 'true' : 'false'"
+  :tabindex="view === '{{ value }}' ? 0 : -1"
+  @click="select_view('{{ value }}')"
+  @keydown.left.prevent="step_view(-1)"
+  @keydown.right.prevent="step_view(1)"
+><a href="#forecast-panel-{{ value }}" @click.prevent>{{ label }}</a></li>

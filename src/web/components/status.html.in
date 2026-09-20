@@ -1,0 +1,3 @@
+{# A line of status text, shown while the Alpine expression `when` holds. #}
+{% params when %}
+<p class="imgw-status" x-show="{{ when }}" x-cloak>{{ caller() }}</p>
