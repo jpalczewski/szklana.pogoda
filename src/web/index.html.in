@@ -812,6 +812,7 @@
   </div>
 
   <script defer src="/app.js?v={{version:app.js}}"></script>
+  <script defer src="/qrcode.js?v={{version:qrcode.js}}"></script>
   <script defer src="/alpine.js?v={{version:alpine.js}}"></script>
 </body>
 </html>

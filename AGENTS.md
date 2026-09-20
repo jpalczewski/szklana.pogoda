@@ -26,6 +26,13 @@ Add a route by creating a handler with the `router.Handler` signature and regist
 
 Every source file is listed in the `modules` tuple in `src/main.zig`. Add a new file there: the tuple drives both the compile-time analysis of declarations no call path reaches and the collection of tests, and a file missing from it is neither checked by `zig build` nor run by `zig build test`.
 
+## Vendored assets
+
+Two browser assets are third-party files kept whole in `src/web/`, so an update is a deliberate replacement and never an edit in place.
+
+- `alpine.js`: Alpine.js 3.14.9, minified, MIT. The file carries no licence header, which is a gap to fix.
+- `qrcode.js`: Project Nayuki's QR Code generator (compiled from TypeScript), MIT, with its licence header kept as the licence requires. Source `https://www.nayuki.io/res/qr-code-generator-library/qrcodegen.js`, fetched 2026-09-20, 45350 bytes, `Last-Modified: Wed, 13 Nov 2024 05:27:46 GMT`, `ETag: ef17b798b049fd5d7bdfd607aeb0740b2dd94999`, sha256 `2511bc17f40a3c41d4a0578995db956b38997334d3d20113a5d4dc5c49c69480`. That URL has no version, so record the same four facts when replacing it. It is a plain global (`qrcodegen`) with no DOM, network or `eval`, which is the property to check again after an update.
+
 ## Build, Test, and Development Commands
 
 - `zig build` — compile the `szklana-pogoda` executable into `zig-out/bin/`.
