@@ -105,6 +105,10 @@ pub const Response = struct {
         return .{ .status = .ok, .content_type = "text/javascript; charset=utf-8", .body = body };
     }
 
+    pub fn woff2(body: []const u8) Response {
+        return .{ .status = .ok, .content_type = "font/woff2", .body = body };
+    }
+
     pub fn json(status: http.Status, body: []const u8) Response {
         return .{ .status = status, .content_type = "application/json; charset=utf-8", .body = body };
     }

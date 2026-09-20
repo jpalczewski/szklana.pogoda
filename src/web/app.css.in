@@ -1,3 +1,22 @@
+/* The pixel font 98.css draws with. Its `@font-face` rules were cut out of the
+ * vendored file, where the fonts were inlined as base64, so that the fonts load
+ * in parallel and are cached apart from the stylesheets. The generator renders
+ * this file into the stylesheet the server sends, with each font's content hash
+ * in its address. */
+@font-face {
+  font-family: "Pixelated MS Sans Serif";
+  src: url("/pixelated-ms-sans-serif.woff2?v={{ version:pixelated-ms-sans-serif.woff2 }}") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Pixelated MS Sans Serif";
+  src: url("/pixelated-ms-sans-serif-bold.woff2?v={{ version:pixelated-ms-sans-serif-bold.woff2 }}") format("woff2");
+  font-weight: bold;
+  font-style: normal;
+}
+
 body {
   align-items: flex-start;
   background: #008080;

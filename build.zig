@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
     // The page links each asset by a hash of its content, so the generator
     // must see the assets as inputs: as file arguments the step re-runs when
     // one changes, and a plain path string would leave the hash stale.
-    for ([_][]const u8{ "98.css", "app.css", "arrival.js", "lib.js", "windows.js", "account.js", "imgw.js", "forecast.js", "app.js", "alpine.js", "qrcode.js" }) |asset| {
+    for ([_][]const u8{ "98.css", "app.css.in", "fonts/pixelated-ms-sans-serif.woff2", "fonts/pixelated-ms-sans-serif-bold.woff2", "arrival.js", "lib.js", "windows.js", "account.js", "imgw.js", "forecast.js", "app.js", "alpine.js", "qrcode.js" }) |asset| {
         render_i18n.addFileArg(b.path(b.fmt("src/web/{s}", .{asset})));
     }
     // The template is assembled from these components (`{% include %}` and

@@ -7,7 +7,6 @@ const openmeteo = @import("../openmeteo/mod.zig");
 const compression = @import("../compression.zig");
 
 const style_css = @embedFile("../web/98.css");
-const app_css = @embedFile("../web/app.css");
 
 /// The pages link every asset as `/<file>?v=<content hash>`, so that URL never
 /// changes meaning and a browser or CDN may keep it for good.
@@ -92,9 +91,25 @@ pub fn style(_: *router.App, ctx: *router.RequestContext) router.AppError!router
     return asset(ctx, encoded(ctx, router.Response.css(style_css), i18n.gzipped.@"98.css"), i18n.versions.@"98.css");
 }
 
+/// The app's own stylesheet is a template (`app.css.in`) that the build renders,
+/// because it links the fonts by their hashes.
 pub fn appStyle(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
-    return asset(ctx, encoded(ctx, router.Response.css(app_css), i18n.gzipped.@"app.css"), i18n.versions.@"app.css");
+    return asset(ctx, encoded(ctx, router.Response.css(i18n.stylesheets.@"app.css"), i18n.gzipped.@"app.css"), i18n.versions.@"app.css");
 }
+
+/// A font the stylesheet loads. woff2 is compressed already, so it is sent as
+/// it is and, unlike the text assets, its answer does not vary by encoding.
+fn font(comptime name: []const u8) router.Handler {
+    const body = @embedFile("../web/fonts/" ++ name);
+    return struct {
+        fn handle(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
+            return asset(ctx, router.Response.woff2(body), @field(i18n.versions, name));
+        }
+    }.handle;
+}
+
+pub const regularFont = font("pixelated-ms-sans-serif.woff2");
+pub const boldFont = font("pixelated-ms-sans-serif-bold.woff2");
 
 /// A script the page loads: the app's own files (see the script tags in
 /// `index.html.in`, whose order is the load order) and the vendored libraries.
@@ -226,6 +241,8 @@ test "the served page links every asset by the hash the handlers expect" {
     const links = [_][]const u8{
         "/98.css?v=" ++ i18n.versions.@"98.css",
         "/app.css?v=" ++ i18n.versions.@"app.css",
+        "/pixelated-ms-sans-serif.woff2?v=" ++ i18n.versions.@"pixelated-ms-sans-serif.woff2",
+        "/pixelated-ms-sans-serif-bold.woff2?v=" ++ i18n.versions.@"pixelated-ms-sans-serif-bold.woff2",
         "/arrival.js?v=" ++ i18n.versions.@"arrival.js",
         "/lib.js?v=" ++ i18n.versions.@"lib.js",
         "/windows.js?v=" ++ i18n.versions.@"windows.js",
@@ -458,11 +475,15 @@ test "a client that does not accept gzip gets the plain body, still marked as va
 }
 
 test "every asset's gzip form is what its file compresses to" {
-    inline for (.{ "98.css", "app.css", "arrival.js", "lib.js", "windows.js", "account.js", "imgw.js", "forecast.js", "app.js", "alpine.js", "qrcode.js" }) |name| {
+    inline for (.{ "98.css", "arrival.js", "lib.js", "windows.js", "account.js", "imgw.js", "forecast.js", "app.js", "alpine.js", "qrcode.js" }) |name| {
         const restored = try gunzipped(@field(i18n.gzipped, name));
         defer std.testing.allocator.free(restored);
         try std.testing.expectEqualStrings(@embedFile("../web/" ++ name), restored);
     }
+    // The app stylesheet is rendered by the build, so it is compared with that.
+    const rendered = try gunzipped(i18n.gzipped.@"app.css");
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expectEqualStrings(i18n.stylesheets.@"app.css", rendered);
     const sprite = try gunzipped(i18n.gzipped.@"icons.svg");
     defer std.testing.allocator.free(sprite);
     try std.testing.expectEqualStrings(i18n.icons_svg, sprite);
@@ -488,4 +509,44 @@ test "the page for a city is compressed per request when the client accepts gzip
     defer std.testing.allocator.free(restored);
     try std.testing.expect(contains(restored, "<meta property=\"og:title\" content=\"Zakopane: 18°C, pochmurno\" />"));
     try std.testing.expect(std.mem.endsWith(u8, restored, "</html>\n"));
+}
+
+test "the fonts are served as woff2 and cached for good only by their current hash" {
+    var app: router.App = .{ .max_body_bytes = 16 };
+    var query_buffer: [64]u8 = undefined;
+    const query = try std.fmt.bufPrint(&query_buffer, "v={s}", .{i18n.versions.@"pixelated-ms-sans-serif.woff2"});
+    var current = testContext("/pixelated-ms-sans-serif.woff2", query);
+    var bare = testContext("/pixelated-ms-sans-serif-bold.woff2", null);
+    current.headers = &accepts_gzip;
+
+    const regular = try regularFont(&app, &current);
+    const bold = try boldFont(&app, &bare);
+
+    try std.testing.expectEqualStrings("font/woff2", regular.content_type);
+    try std.testing.expectEqualStrings(immutable, regular.cache_control.?);
+    try std.testing.expectEqualStrings(revalidate, bold.cache_control.?);
+    // A woff2 file is compressed already, so it is never sent in another coding.
+    try std.testing.expect(regular.content_encoding == null and regular.vary == null);
+    try std.testing.expectEqualStrings("wOF2", regular.body[0..4]);
+    try std.testing.expectEqualStrings("wOF2", bold.body[0..4]);
+}
+
+test "the stylesheet links each font by the hash its handler expects" {
+    const css = i18n.stylesheets.@"app.css";
+    try std.testing.expect(contains(css, "url(\"/pixelated-ms-sans-serif.woff2?v=" ++ i18n.versions.@"pixelated-ms-sans-serif.woff2" ++ "\")"));
+    try std.testing.expect(contains(css, "url(\"/pixelated-ms-sans-serif-bold.woff2?v=" ++ i18n.versions.@"pixelated-ms-sans-serif-bold.woff2" ++ "\")"));
+    try std.testing.expect(!contains(css, "{{"));
+    // The vendored stylesheet no longer carries the fonts inline.
+    try std.testing.expect(!contains(style_css, "data:font"));
+    try std.testing.expect(contains(style_css, "\"Pixelated MS Sans Serif\""));
+}
+
+test "the app stylesheet is served with the hash of what it was rendered to" {
+    var app: router.App = .{ .max_body_bytes = 16 };
+    var ctx = testContext("/app.css", null);
+
+    const response = try appStyle(&app, &ctx);
+
+    try std.testing.expectEqualStrings(i18n.stylesheets.@"app.css", response.body);
+    try std.testing.expectEqual(std.hash.Wyhash.hash(0, response.body), try std.fmt.parseInt(u64, i18n.versions.@"app.css", 16));
 }

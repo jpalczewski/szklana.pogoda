@@ -13,6 +13,13 @@ const version_prefix = "version:";
 /// `{% call "name" %}…{% endcall %}`.
 const component_suffix = ".html.in";
 
+/// A stylesheet that names other assets by their hash is a template of its own,
+/// `<name>.css.in`, rendered into `<name>` (with no locale: it has no words).
+const stylesheet_suffix = ".css.in";
+
+/// Fonts are compressed already; gzip would only add its header.
+const precompressed_suffix = ".woff2";
+
 /// Components may include components; a component that includes itself, or two
 /// that include each other, would never finish expanding.
 const max_component_depth = 16;
@@ -33,6 +40,18 @@ const Gzipped = struct {
     bytes: []u8,
 };
 
+/// A stylesheet after `render`, keyed by the name it is served under.
+const RenderedStylesheet = struct {
+    name: []const u8,
+    bytes: []u8,
+};
+
+/// A `<name>.css.in` template as read, before `render` fills in the hashes.
+const StylesheetTemplate = struct {
+    name: []const u8,
+    source: []u8,
+};
+
 /// The content hash of one browser asset, keyed by its file name.
 const AssetVersion = struct {
     name: []const u8,
@@ -41,14 +60,20 @@ const AssetVersion = struct {
 
 /// Arguments: template, pl locale, en locale, output file, the weather icon
 /// source, then every other build input: the components the template includes
-/// (files named `*.html.in`) and every browser asset it links. Each is a build
-/// input, so editing one re-renders the page, with its new hash for an asset.
-/// The icon source is rendered here into `/icons.svg` and `/favicon.svg`, which
-/// are hashed and linked like any asset.
+/// (files named `*.html.in`), the stylesheet templates (`*.css.in`) and every
+/// browser asset the page links. Each is a build input, so editing one
+/// re-renders the page, with its new hash for an asset. The icon source is
+/// rendered here into `/icons.svg` and `/favicon.svg`, which are hashed and
+/// linked like any asset.
 ///
-/// Every file the server sends is also written in gzip form, as `gzipped.<name>`
-/// next to `versions.<name>`, because the build can afford the slowest setting
-/// once and the server should not compress the same bytes for every request.
+/// A `<name>.css.in` file is rendered into the stylesheet `<name>`, emitted as
+/// `stylesheets.<name>`: it can link a font or an image by its content hash
+/// (`{{ version:<file> }}`), and its own hash covers the result.
+///
+/// Every file the server sends, except one that is compressed already, is also
+/// written in gzip form as `gzipped.<name>`, next to `versions.<name>`: the
+/// build can afford the slowest setting once, and the server should not
+/// compress the same bytes for every request.
 ///
 /// The page is made in two passes: `expandComponents` turns the template and
 /// its components into one flat template, then `render` fills in a locale.
@@ -82,6 +107,11 @@ pub fn main(init: std.process.Init) !void {
         for (components.items) |component| allocator.free(component.source);
         components.deinit(allocator);
     }
+    var templates: std.ArrayList(StylesheetTemplate) = .empty;
+    defer {
+        for (templates.items) |template_file| allocator.free(template_file.source);
+        templates.deinit(allocator);
+    }
     for (args[6..]) |path| {
         const contents = try cwd.readFileAlloc(init.io, path, allocator, .limited(max_file_bytes));
         const file_name = std.Io.Dir.path.basename(path);
@@ -91,16 +121,37 @@ pub fn main(init: std.process.Init) !void {
                 if (std.mem.eql(u8, known.name, name)) return error.DuplicateComponent;
             }
             try components.append(allocator, .{ .name = name, .source = contents });
+        } else if (std.mem.endsWith(u8, file_name, stylesheet_suffix)) {
+            const name = file_name[0 .. file_name.len - ".in".len];
+            try templates.append(allocator, .{ .name = name, .source = contents });
         } else {
             defer allocator.free(contents);
             try versions.append(allocator, .{ .name = file_name, .hash = std.hash.Wyhash.hash(0, contents) });
-            try gzipped.append(allocator, .{ .name = file_name, .bytes = try compression.gzip(allocator, contents, gzip_options) });
+            if (!std.mem.endsWith(u8, file_name, precompressed_suffix)) {
+                try gzipped.append(allocator, .{ .name = file_name, .bytes = try compression.gzip(allocator, contents, gzip_options) });
+            }
         }
     }
     try versions.append(allocator, .{ .name = "icons.svg", .hash = std.hash.Wyhash.hash(0, icons.sprite) });
     try versions.append(allocator, .{ .name = "favicon.svg", .hash = std.hash.Wyhash.hash(0, icons.favicon) });
     try gzipped.append(allocator, .{ .name = "icons.svg", .bytes = try compression.gzip(allocator, icons.sprite, gzip_options) });
     try gzipped.append(allocator, .{ .name = "favicon.svg", .bytes = try compression.gzip(allocator, icons.favicon, gzip_options) });
+
+    // A stylesheet is rendered once every plain asset has its hash, and gets
+    // its own after that, so the page links the hash of what the server sends.
+    var stylesheets: std.ArrayList(RenderedStylesheet) = .empty;
+    defer {
+        for (stylesheets.items) |sheet| allocator.free(sheet.bytes);
+        stylesheets.deinit(allocator);
+    }
+    for (templates.items) |template_file| {
+        const css = try render(allocator, template_file.source, "{}", versions.items);
+        try stylesheets.append(allocator, .{ .name = template_file.name, .bytes = css });
+    }
+    for (stylesheets.items) |sheet| {
+        try versions.append(allocator, .{ .name = sheet.name, .hash = std.hash.Wyhash.hash(0, sheet.bytes) });
+        try gzipped.append(allocator, .{ .name = sheet.name, .bytes = try compression.gzip(allocator, sheet.bytes, gzip_options) });
+    }
 
     const page = try expandComponents(allocator, template, components.items);
     defer allocator.free(page);
@@ -131,6 +182,11 @@ pub fn main(init: std.process.Init) !void {
             "    pub const {f} = \"{x:0>16}\";\n",
             .{ std.zig.fmtId(version.name), version.hash },
         );
+    }
+    try generated.writer.writeAll("};\n");
+    try generated.writer.writeAll("pub const stylesheets = struct {\n");
+    for (stylesheets.items) |sheet| {
+        try generated.writer.print("    pub const {f} = \"{f}\";\n", .{ std.zig.fmtId(sheet.name), std.zig.fmtString(sheet.bytes) });
     }
     try generated.writer.writeAll("};\n");
 
@@ -959,4 +1015,15 @@ test "dataset attributes are translated like any other key" {
     defer std.testing.allocator.free(rendered);
     try std.testing.expectEqualStrings("<body data-http-error=\"Blad &quot;x&quot;\">", rendered);
     try std.testing.expectError(error.MissingTranslation, render(std.testing.allocator, page, "{}", &.{}));
+}
+
+test "a stylesheet template gets the hash of the asset it names" {
+    const versions = [_]AssetVersion{.{ .name = "a.woff2", .hash = 0xabc }};
+    const css = try render(std.testing.allocator, "@font-face { src: url(\"/a.woff2?v={{ version:a.woff2 }}\"); }", "{}", &versions);
+    defer std.testing.allocator.free(css);
+    try std.testing.expectEqualStrings("@font-face { src: url(\"/a.woff2?v=0000000000000abc\"); }", css);
+}
+
+test "a stylesheet that names an unknown asset is an error" {
+    try std.testing.expectError(error.UnknownAsset, render(std.testing.allocator, "url({{ version:nope.woff2 }})", "{}", &.{}));
 }

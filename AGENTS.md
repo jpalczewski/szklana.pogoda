@@ -48,12 +48,17 @@ The server answers in gzip when the request's `Accept-Encoding` lists it (`compr
 
 Use a component for markup that occurs more than once with only its words or ids changing (`dialog`, the tabs, `detail`, `imgw_listbox`), and for a part large enough to read on its own (`forecast`, `imgw`, `account`, `about`). Rendered output is the same as the template written out in full, apart from whitespace.
 
+## Stylesheets and fonts
+
+`98.css` is the vendored stylesheet; `app.css.in` is the app's own and is a template. The generator renders every `<name>.css.in` into the stylesheet `<name>` (`i18n.stylesheets.<name>`, which `pages.zig` serves instead of an embedded file) after it has hashed the plain assets, so a stylesheet can link a font or an image by its hash with `{{ version:<file> }}` (there is no locale: the CSS has no words, and a comment must not hold a `{{`). The hash of the rendered stylesheet is what the page links, so a changed font changes the stylesheet's address too. The two Pixelated MS Sans Serif fonts are `src/web/fonts/*.woff2`, declared in `app.css.in` and preloaded from the `<head>` (with `crossorigin`, which a font preload needs even from the same origin). A font is served by `font(…)` in `pages.zig` with `immutable` only for its current hash, and is never gzipped or marked `Vary`, being compressed already (the generator skips `.woff2`). A new font or image is a file argument in `build.zig`, a handler like `font`, and a route in `main.zig`.
+
 ## Vendored assets
 
-Two browser assets are third-party files kept whole in `src/web/`, so an update is a deliberate replacement and never an edit in place.
+Three browser assets are third-party files in `src/web/`. Two are kept whole, so an update is a deliberate replacement and never an edit in place; `98.css` is the exception, described last.
 
 - `alpine.js`: Alpine.js 3.14.9, minified, MIT. The file carries no licence header, which is a gap to fix.
 - `qrcode.js`: Project Nayuki's QR Code generator (compiled from TypeScript), MIT, with its licence header kept as the licence requires. Source `https://www.nayuki.io/res/qr-code-generator-library/qrcodegen.js`, fetched 2026-09-20, 45350 bytes, `Last-Modified: Wed, 13 Nov 2024 05:27:46 GMT`, `ETag: ef17b798b049fd5d7bdfd607aeb0740b2dd94999`, sha256 `2511bc17f40a3c41d4a0578995db956b38997334d3d20113a5d4dc5c49c69480`. That URL has no version, so record the same four facts when replacing it. It is a plain global (`qrcodegen`) with no DOM, network or `eval`, which is the property to check again after an update.
+- `98.css`: Jordan Scales' 98.css, MIT, with its licence header kept. Upstream inlines its two fonts as base64 `@font-face` rules; those rules are cut out here (and the fonts extracted to `src/web/fonts/`, declared in `app.css.in`), so an update is a replacement followed by the same cut: decode each `data:font/woff2` URL to a file, delete its `@font-face` block, and check that the fonts are byte-identical to the ones in `src/web/fonts/`.
 
 ## Build, Test, and Development Commands
 

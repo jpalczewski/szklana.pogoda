@@ -14,6 +14,8 @@
   <meta name="twitter:card" content="summary" />
   <!--link-preview:end-->
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v={{ version:favicon.svg }}" />
+  <link rel="preload" href="/pixelated-ms-sans-serif.woff2?v={{ version:pixelated-ms-sans-serif.woff2 }}" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/pixelated-ms-sans-serif-bold.woff2?v={{ version:pixelated-ms-sans-serif-bold.woff2 }}" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="/98.css?v={{ version:98.css }}" />
   <link rel="stylesheet" href="/app.css?v={{ version:app.css }}" />
 </head>
