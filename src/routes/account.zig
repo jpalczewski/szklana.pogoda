@@ -56,7 +56,7 @@ pub fn ensure(comptime handler: SessionHandler) router.Handler {
             try guard(app, request);
             if (try resolve(app, request)) |session| return private(try handler(app, request, session));
 
-            const created = try create(app, request.allocator);
+            const created = try create(app, request.allocator, request.client_ip);
             var response = private(try handler(app, request, created.session));
             response.set_cookie = created.cookie;
             return response;
@@ -147,16 +147,19 @@ const Created = struct {
     cookie: []const u8,
 };
 
-fn create(app: *router.App, allocator: std.mem.Allocator) router.AppError!Created {
+fn create(app: *router.App, allocator: std.mem.Allocator, client_ip: []const u8) router.AppError!Created {
     const store = app.accounts orelse return error.AccountsUnavailable;
     const io = app.io orelse return error.AccountsUnavailable;
 
+    const now = nowSeconds(io);
+    if (app.new_session_limiter) |limiter| {
+        if (!limiter.allow(io, client_ip, now)) return error.TooManyRequests;
+    }
     const text = accounts.token.generate(io) catch |err| {
         std.log.err("no secure randomness for a session token: {t}", .{err});
         return error.AccountsUnavailable;
     };
     const hash = accounts.token.hash(&text).?;
-    const now = nowSeconds(io);
     const user_id = store.createUser(now) catch |err| {
         std.log.err("creating a user failed: {t}", .{err});
         return error.AccountsUnavailable;
@@ -318,6 +321,39 @@ test "signing out ends the session, clears the cookie and needs the site's origi
     try std.testing.expect(std.mem.find(u8, response.set_cookie.?, "Max-Age=0") != null);
     try std.testing.expectEqualStrings("{\"session\":false}", (try site.call(sessionStatus, .GET, &.{returning})).body);
     try std.testing.expectError(error.Unauthorized, site.call(signOut, .DELETE, &.{ same_site, local_host, returning }));
+}
+
+test "one address may make only so many accounts, and known browsers do not count" {
+    const site = try TestSite.init();
+    defer site.deinit();
+    var limiter: accounts.Limiter = .init(std.testing.allocator, 2, 3600);
+    defer limiter.deinit();
+    site.app.new_session_limiter = &limiter;
+    const keep = ensure(echoUser);
+
+    var first_request: router.RequestContext = .{
+        .allocator = site.arena.allocator(),
+        .method = .POST,
+        .path = "/api/me",
+        .query = null,
+        .headers = &.{ same_site, local_host },
+        .body = null,
+        .client_ip = "203.0.113.4",
+    };
+    const first = try keep(&site.app, &first_request);
+    _ = try keep(&site.app, &first_request);
+    try std.testing.expectError(error.TooManyRequests, keep(&site.app, &first_request));
+
+    // A browser that already has a session is not making an account.
+    var cookie_header_buffer: [64]u8 = undefined;
+    const cookie_header = try std.fmt.bufPrint(&cookie_header_buffer, "sid={s}", .{tokenOf(first.set_cookie.?)});
+    first_request.headers = &.{ same_site, local_host, .{ .name = "Cookie", .value = cookie_header } };
+    _ = try keep(&site.app, &first_request);
+
+    // Another address has its own count.
+    first_request.headers = &.{ same_site, local_host };
+    first_request.client_ip = "203.0.113.5";
+    _ = try keep(&site.app, &first_request);
 }
 
 test "the account routes need the accounts store" {

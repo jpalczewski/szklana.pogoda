@@ -6,6 +6,7 @@ const router = @import("router.zig");
 const server = @import("server.zig");
 const api = @import("routes/api.zig");
 const account_route = @import("routes/account.zig");
+const favorites_route = @import("routes/favorites.zig");
 const accounts = @import("accounts/mod.zig");
 const pages = @import("routes/pages.zig");
 const storm = @import("routes/storm.zig");
@@ -52,6 +53,7 @@ const modules = .{
     link_preview,
     accounts,
     account_route,
+    favorites_route,
 };
 
 /// Forces the semantic analyzer over every function of a module, so production
@@ -100,6 +102,9 @@ const Config = struct {
     /// scheme decides whether the session cookie is `__Host-` and `Secure`, and
     /// the requests that change state must name it in `Origin`.
     public_origin: ?[]const u8 = null,
+    /// How many anonymous accounts one address may make in an hour. An address
+    /// is shared by everyone behind a carrier or an office, so it is not small.
+    new_sessions_per_hour: u32 = 30,
     imgw_interval_seconds: u64 = 10 * 60,
     imgw_warnings_interval_seconds: u64 = 5 * 60,
     /// How long one Antistorm reading is reused. Antistorm recomputes every
@@ -127,6 +132,7 @@ const Config = struct {
             .database_path = environ.get("DATABASE_PATH") orelse defaults.database_path,
             .accounts_database_path = environ.get("ACCOUNTS_DATABASE_PATH") orelse defaults.accounts_database_path,
             .public_origin = environ.get("PUBLIC_ORIGIN") orelse defaults.public_origin,
+            .new_sessions_per_hour = try envInt(u32, environ, "NEW_SESSIONS_PER_HOUR", defaults.new_sessions_per_hour),
             .imgw_interval_seconds = try envInt(u64, environ, "IMGW_INTERVAL_SECONDS", defaults.imgw_interval_seconds),
             .imgw_warnings_interval_seconds = try envInt(u64, environ, "IMGW_WARNINGS_INTERVAL_SECONDS", defaults.imgw_warnings_interval_seconds),
             .storm_cache_seconds = try envInt(u64, environ, "STORM_CACHE_SECONDS", defaults.storm_cache_seconds),
@@ -149,6 +155,7 @@ const Config = struct {
             const host = origin[host_start..];
             if (host.len == 0 or std.mem.findScalar(u8, host, '/') != null) return error.InvalidPublicOrigin;
         }
+        if (self.new_sessions_per_hour == 0) return error.InvalidNewSessionsPerHour;
         if (self.max_connections_per_cpu == 0) return error.InvalidMaxConnectionsPerCpu;
         if (self.imgw_interval_seconds == 0) return error.InvalidImgwInterval;
         if (self.imgw_warnings_interval_seconds == 0) return error.InvalidImgwWarningsInterval;
@@ -188,6 +195,9 @@ const routes = [_]router.Route{
     .{ .method = .GET, .path = "/api/forecast", .handler = forecast_route.forecast },
     .{ .method = .GET, .path = "/api/me", .handler = account_route.sessionStatus },
     .{ .method = .DELETE, .path = "/api/me/session", .handler = account_route.signOut },
+    .{ .method = .GET, .path = "/api/me/favorites", .handler = favorites_route.list },
+    .{ .method = .POST, .path = "/api/me/favorites", .handler = favorites_route.add },
+    .{ .method = .DELETE, .path = "/api/me/favorites", .handler = favorites_route.remove },
 };
 
 const metrics_routes = [_]router.Route{
@@ -219,6 +229,8 @@ pub fn main(init: std.process.Init) !void {
     defer observations.deinit();
     var account_store = try accounts.Store.initFile(accounts_database_path);
     defer account_store.deinit();
+    var new_session_limiter: accounts.Limiter = .init(gpa, config.new_sessions_per_hour, std.time.s_per_hour);
+    defer new_session_limiter.deinit();
     if (config.public_origin == null) {
         std.log.warn("PUBLIC_ORIGIN is not set: session cookies are not Secure and the Origin of a state-changing request is compared with its Host", .{});
     }
@@ -242,7 +254,7 @@ pub fn main(init: std.process.Init) !void {
     var metrics_listener = try metrics_address.listen(io, .{ .reuse_address = true });
     defer metrics_listener.deinit(io);
 
-    var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trusted_proxies = config.trusted_proxies, .metrics = &metrics_registry, .weather_store = &observations, .accounts = &account_store, .cookie_policy = config.cookiePolicy(), .public_origin = config.public_origin, .storm = &storm_client, .forecast = &forecast_client, .io = io };
+    var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trusted_proxies = config.trusted_proxies, .metrics = &metrics_registry, .weather_store = &observations, .accounts = &account_store, .new_session_limiter = &new_session_limiter, .cookie_policy = config.cookiePolicy(), .public_origin = config.public_origin, .storm = &storm_client, .forecast = &forecast_client, .io = io };
     var metrics_app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trusted_proxies = config.trusted_proxies, .metrics = &metrics_registry };
     var connections: Io.Group = .init;
     defer connections.await(io) catch |err| std.log.warn("connections did not shut down cleanly: {t}", .{err});
@@ -314,6 +326,7 @@ test "config reads environment overrides" {
     try environ.put("DATABASE_PATH", "var/weather.db");
     try environ.put("ACCOUNTS_DATABASE_PATH", "var/accounts.db");
     try environ.put("PUBLIC_ORIGIN", "https://szklana.pogoda");
+    try environ.put("NEW_SESSIONS_PER_HOUR", "5");
     try environ.put("IMGW_WARNINGS_INTERVAL_SECONDS", "120");
     try environ.put("STORM_CACHE_SECONDS", "60");
     try environ.put("FORECAST_CACHE_SECONDS", "30");
@@ -329,6 +342,7 @@ test "config reads environment overrides" {
         .database_path = "var/weather.db",
         .accounts_database_path = "var/accounts.db",
         .public_origin = "https://szklana.pogoda",
+        .new_sessions_per_hour = 5,
         .imgw_warnings_interval_seconds = 120,
         .storm_cache_seconds = 60,
         .forecast_cache_seconds = 30,
@@ -349,6 +363,13 @@ test "config rejects a public origin that is not a bare origin" {
         try environ.put("PUBLIC_ORIGIN", origin);
         try std.testing.expectError(error.InvalidPublicOrigin, Config.fromEnv(&environ));
     }
+}
+
+test "config rejects zero new sessions per hour" {
+    var environ = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ.deinit();
+    try environ.put("NEW_SESSIONS_PER_HOUR", "0");
+    try std.testing.expectError(error.InvalidNewSessionsPerHour, Config.fromEnv(&environ));
 }
 
 test "config rejects zero connections per CPU" {
