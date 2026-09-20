@@ -708,8 +708,14 @@ function forecast() {
     /* The tab on show. It belongs to the panel, not to a place, so it survives
      * picking another city. */
     view: "now",
+    /* The cities this browser keeps, as `{ name, latitude, longitude }`. They
+     * live on the server, behind a cookie the first save creates; a browser that
+     * never saved one has none, and asking does not give it a cookie. */
+    favorites: [],
+    saving_favorite: false,
 
     init() {
+      this.load_favorites();
       const named = new URLSearchParams(location.search).get("city");
       if (named) {
         this.open_named(named);
@@ -723,6 +729,62 @@ function forecast() {
       if (!remembered) return;
       this.query = remembered.name;
       this.show_place(remembered);
+    },
+
+    favorites_from(payload) {
+      return (payload.favorites ?? []).map((city) => ({
+        name: city.city_name,
+        latitude: city.latitude,
+        longitude: city.longitude,
+      }));
+    },
+
+    /* Favourites are an extra: a list that cannot be fetched leaves the page as
+     * it would be without any, and says nothing. */
+    async load_favorites() {
+      try {
+        const response = await fetch("/api/me/favorites");
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        this.favorites = this.favorites_from(await response.json());
+      } catch (err) {
+        console.error("favourites request failed", err);
+      }
+    },
+
+    /* Only a place picked by name can be kept: a position fix has no name in the
+     * city list. Both spellings are folded, as the server folds them. */
+    get is_favorite() {
+      if (!this.place?.named) return false;
+      const wanted = fold(this.place.name);
+      return this.favorites.some((city) => fold(city.name) === wanted);
+    },
+
+    get favorite_label() {
+      const strings = document.body.dataset;
+      return this.is_favorite ? strings.favoriteRemove : strings.favoriteAdd;
+    },
+
+    async toggle_favorite() {
+      const place = this.place;
+      if (!place?.named || this.saving_favorite) return;
+      const removing = this.is_favorite;
+      this.saving_favorite = true;
+      try {
+        const response = await fetch(`/api/me/favorites?city=${encodeURIComponent(place.name)}`, {
+          method: removing ? "DELETE" : "POST",
+        });
+        if (!response.ok) {
+          this.status =
+            response.status === 400 ? document.body.dataset.favoritesFull : document.body.dataset.favoritesUnavailable;
+          return;
+        }
+        this.favorites = this.favorites_from(await response.json());
+      } catch (err) {
+        console.error("saving a favourite failed", err);
+        this.status = document.body.dataset.favoritesUnavailable;
+      } finally {
+        this.saving_favorite = false;
+      }
     },
 
     /* A link that names a city (`?city=`) opens on it: that is the address a
@@ -739,7 +801,7 @@ function forecast() {
         return;
       }
       this.query = city.name;
-      this.show_place({ name: city.name, label: city.name, latitude: city.latitude, longitude: city.longitude });
+      this.show_place({ name: city.name, label: city.name, latitude: city.latitude, longitude: city.longitude, named: true });
     },
 
     get needle() {
@@ -837,7 +899,7 @@ function forecast() {
     pick(city) {
       this.query = city.name;
       this.suggestions_open = false;
-      const place = { name: city.name, label: city.name, latitude: city.latitude, longitude: city.longitude };
+      const place = { name: city.name, label: city.name, latitude: city.latitude, longitude: city.longitude, named: true };
       this.remember(place);
       show_city_in_address(city.name);
       this.show_place(place);
@@ -938,7 +1000,7 @@ function forecast() {
       try {
         const place = JSON.parse(localStorage.getItem(last_place_key));
         if (typeof place?.name === "string" && Number.isFinite(place.latitude) && Number.isFinite(place.longitude)) {
-          return { name: place.name, label: place.name, latitude: place.latitude, longitude: place.longitude };
+          return { name: place.name, label: place.name, latitude: place.latitude, longitude: place.longitude, named: true };
         }
       } catch {
         /* Storage is a convenience: blocked or corrupt data means no memory. */
