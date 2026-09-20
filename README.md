@@ -193,7 +193,47 @@ favourites are added together (up to 50, oldest first), the other browsers of th
 joined account come along, and a login code it had goes to an account that has
 none. A wrong, spent or expired code is one and the same 401. The database keeps
 only the SHA-256 of a code, and a code is never written to a log, an error or a
-metric. It travels only in a request or response body, never in a URL.
+metric. It travels only in a request or response body, never in the path or the
+query of a URL, which the access log records. The one place it is in an address
+is a sign-in link's fragment (below), which a browser never sends.
+
+### Sign-in links and QR codes
+
+Under a transfer code the Account dialog draws a **QR code** and offers **Copy
+link**. Both stand for `https://<site>/#code=ABCDE12345` (the page's own address,
+keeping `/en/`), so a phone's camera or a link pasted on another computer opens
+the site with the code in the **fragment**, which a browser does not send to the
+server: it is in neither the access log nor a `Referer`. The QR is drawn in the
+browser (a vendored, MIT-licensed generator, see `AGENTS.md`) as an inline SVG,
+black on white, and goes away with the code: when the ten minutes run out, on
+**Hide** and when the dialog closes.
+
+Opening a link **signs nothing in.** The page takes the code out of the address
+at once and keeps it in memory, then opens the Account dialog and asks. Anyone can
+send a link made from their own code, and using it would put this browser's
+favourites into their account, so the dialog says how many favourites would be
+joined, tells the person to cancel if someone sent them the link, and puts the
+focus on **Cancel**. Only a code of exactly ten characters works as a link, so a
+login code never can. This confirmation lowers the risk and does not remove it: a
+convincing pretext can still get the click. The stronger design is the reverse,
+where the new browser shows a request and the signed-in one approves it, which
+needs state on the server and is not built.
+
+What to know when using it:
+
+- The fragment is in browser history and its sync until the page clears it (at
+  once), and in the clipboard after **Copy link**, which some systems sync and a
+  chat remembers. The code works once and for ten minutes, which bounds this.
+- QR scanner apps keep a history of what they read and some send it to a cloud
+  safety check.
+- A scanner that runs the page but does not click uses nothing up, because
+  nothing signs in on its own. One that clicks (rare) uses the code up, and the
+  person asks for a new one.
+- On iOS a camera opens the link in Safari, not in an installed home-screen web
+  app, whose cookies are separate, so the account lands in Safari. Type the code
+  into the web app.
+- The link uses the address of the browser that shows it. If that is not
+  `PUBLIC_ORIGIN`, signing in answers 403.
 
 A limit per client address (an IPv6 client by its /64) caps asking for a code (20
 an hour) and trying one (10 in 10 minutes). Anyone who holds the cookie can make
