@@ -199,12 +199,10 @@ const TestSite = struct {
         return site;
     }
 
-    fn deinit(self: *TestSite) void {
+    fn destroy(self: *TestSite) void {
         self.arena.deinit();
         self.store.deinit();
-        const allocator = std.testing.allocator;
-        self.* = undefined;
-        allocator.destroy(self);
+        std.testing.allocator.destroy(self);
     }
 
     fn call(self: *TestSite, handler: router.Handler, method: std.http.Method, headers: []const router.Header) router.AppError!router.Response {
@@ -235,7 +233,7 @@ const local_host: router.Header = .{ .name = "Host", .value = "localhost:8080" }
 
 test "a request without a cookie has no session and the answer is not cacheable" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
 
     const response = try site.call(sessionStatus, .GET, &.{});
     try std.testing.expectEqualStrings("{\"session\":false}", response.body);
@@ -245,7 +243,7 @@ test "a request without a cookie has no session and the answer is not cacheable"
 
 test "ensure makes a user on the first request and recognises the browser after" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     const keep = ensure(echoUser);
 
     const first = try site.call(keep, .POST, &.{ same_site, local_host });
@@ -265,7 +263,7 @@ test "ensure makes a user on the first request and recognises the browser after"
 
 test "require answers 401 without a session and runs the handler with one" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     try std.testing.expectError(error.Unauthorized, site.call(require(echoUser), .GET, &.{}));
 
     const created = try site.call(ensure(echoUser), .POST, &.{ same_site, local_host });
@@ -277,7 +275,7 @@ test "require answers 401 without a session and runs the handler with one" {
 
 test "a cookie that is not a token, or that nobody issued, is no session" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     try std.testing.expectEqualStrings("{\"session\":false}", (try site.call(sessionStatus, .GET, &.{.{ .name = "Cookie", .value = "sid=garbage" }})).body);
     const forged = "sid=" ++ "A" ** accounts.token.text_len;
     try std.testing.expectEqualStrings("{\"session\":false}", (try site.call(sessionStatus, .GET, &.{.{ .name = "Cookie", .value = forged }})).body);
@@ -285,7 +283,7 @@ test "a cookie that is not a token, or that nobody issued, is no session" {
 
 test "a request that changes state must come from the site's own origin" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     const keep = ensure(echoUser);
 
     try std.testing.expectError(error.Forbidden, site.call(keep, .POST, &.{local_host}));
@@ -296,7 +294,7 @@ test "a request that changes state must come from the site's own origin" {
 
 test "with a configured origin only that origin is accepted" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     site.app.public_origin = "https://szklana.pogoda";
     site.app.cookie_policy = .secure;
     const keep = ensure(echoUser);
@@ -310,7 +308,7 @@ test "with a configured origin only that origin is accepted" {
 
 test "signing out ends the session, clears the cookie and needs the site's origin" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     const created = try site.call(ensure(echoUser), .POST, &.{ same_site, local_host });
     var cookie_header_buffer: [64]u8 = undefined;
     const cookie_header = try std.fmt.bufPrint(&cookie_header_buffer, "sid={s}", .{tokenOf(created.set_cookie.?)});
@@ -327,7 +325,7 @@ test "signing out ends the session, clears the cookie and needs the site's origi
 
 test "one address may make only so many accounts, and known browsers do not count" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     var limiter: accounts.Limiter = .init(std.testing.allocator, 2, 3600);
     defer limiter.deinit();
     site.app.new_session_limiter = &limiter;

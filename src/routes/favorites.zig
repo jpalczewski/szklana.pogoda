@@ -118,12 +118,10 @@ const TestSite = struct {
         return site;
     }
 
-    fn deinit(self: *TestSite) void {
+    fn destroy(self: *TestSite) void {
         self.arena.deinit();
         self.store.deinit();
-        const allocator = std.testing.allocator;
-        self.* = undefined;
-        allocator.destroy(self);
+        std.testing.allocator.destroy(self);
     }
 
     fn call(self: *TestSite, handler: router.Handler, method: std.http.Method, query: ?[]const u8, cookie: ?[]const u8) router.AppError!router.Response {
@@ -150,7 +148,7 @@ const TestSite = struct {
 
 test "the first favourite makes the account and the cookie brings it back" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
 
     const added = try site.call(add, .POST, "city=Zakopane", null);
     try std.testing.expect(added.set_cookie != null);
@@ -164,7 +162,7 @@ test "the first favourite makes the account and the cookie brings it back" {
 
 test "a browser with no account has no favourites and asking makes none" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     const listed = try site.call(list, .GET, null, null);
     try std.testing.expectEqualStrings("{\"favorites\":[]}", listed.body);
     try std.testing.expect(listed.set_cookie == null);
@@ -173,7 +171,7 @@ test "a browser with no account has no favourites and asking makes none" {
 
 test "a lazy or percent-encoded spelling is stored as the table's" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     const first = try site.call(add, .POST, "city=gorzow+wielkopolski", null);
     const cookie = try site.cookieFor(first.set_cookie.?);
     _ = try site.call(add, .POST, "city=Gorz%C3%B3w+Wielkopolski", cookie);
@@ -188,7 +186,7 @@ test "a lazy or percent-encoded spelling is stored as the table's" {
 
 test "a city outside the table, or none at all, is refused and makes no account" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     try std.testing.expectError(error.UnknownCity, site.call(add, .POST, "city=Atlantyda", null));
     try std.testing.expectError(error.BadRequest, site.call(add, .POST, "city=", null));
     try std.testing.expectError(error.BadRequest, site.call(add, .POST, null, null));
@@ -197,7 +195,7 @@ test "a city outside the table, or none at all, is refused and makes no account"
 
 test "removing a favourite leaves the others, and needs no account to be harmless" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     const first = try site.call(add, .POST, "city=Zakopane", null);
     const cookie = try site.cookieFor(first.set_cookie.?);
     _ = try site.call(add, .POST, "city=Gdansk", cookie);
@@ -212,7 +210,7 @@ test "removing a favourite leaves the others, and needs no account to be harmles
 
 test "changing favourites needs the site's origin" {
     const site = try TestSite.init();
-    defer site.deinit();
+    defer site.destroy();
     var request: router.RequestContext = .{
         .allocator = site.arena.allocator(),
         .method = .POST,
