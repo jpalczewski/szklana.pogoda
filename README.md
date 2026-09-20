@@ -52,6 +52,7 @@ Environment variables:
 | `METRICS_PORT` | `9090` | metrics listener |
 | `DATABASE_PATH` | `weather.db` | SQLite file |
 | `ACCOUNTS_DATABASE_PATH` | `accounts.db` | SQLite file of anonymous users and their sessions; unlike the weather file it cannot be rebuilt from upstream, so back it up |
+| `NEW_SESSIONS_PER_HOUR` | `30` | how many anonymous accounts one client address may make in an hour (an address is shared by a whole carrier or office, so the default is not small) |
 | `PUBLIC_ORIGIN` | empty | the origin the site is served from, e.g. `https://szklana.pogoda` (scheme, host, optional port; no path). An `https` origin makes the session cookie `__Host-` and `Secure`, and a request that changes state must name this origin in `Origin`. Empty (development) gives a plain cookie and compares `Origin` with `Host`; the server warns at startup |
 | `MAX_BODY_BYTES` | `16384` | request body limit |
 | `MAX_CONNECTIONS_PER_CPU` | `4` | connection limit |
@@ -90,6 +91,9 @@ All timestamps are stored in the UTC-suffixed form `YYYY-MM-DDTHH:MM:SSZ`.
 | `GET /api/forecast?lat=&lon=` or `?city=` | Open-Meteo forecast (current + 7-day daily + next 24 hours) for one location |
 | `GET /api/me` | whether the request carries a live session: `{"session": true\|false}`; never a 401 |
 | `DELETE /api/me/session` | ends the caller's session and clears the cookie; 401 without one |
+| `GET /api/me/favorites` | the caller's favourite cities, `{"favorites": [{city_name, latitude, longitude}]}`; empty without a session, and asking does not create one |
+| `POST /api/me/favorites?city=` | adds a city and answers with the list; the first one from a browser with no session creates it. 404 for a city outside the table, 400 past 50 favourites, 429 when the address made too many accounts |
+| `DELETE /api/me/favorites?city=` | removes a city and answers with the list |
 | `GET /api/memory` | process memory |
 | `GET /healthz` | liveness probe (`ok`); the container's `HEALTHCHECK` |
 | `GET /metrics` | Prometheus metrics (second listener) |
@@ -161,8 +165,8 @@ the server has no raster renderer yet).
 ## Sessions
 
 A visitor is an anonymous user: a row in `accounts.db` and a cookie that names
-it, created by the first request that has something to keep (no route does yet)
-and never by a visit. The cookie holds 256 random bits; the database keeps only
+it, created by the first request that has something to keep (saving a favourite
+city) and never by a visit. The cookie holds 256 random bits; the database keeps only
 their SHA-256, so a copy of it is not a copy of anyone's session. The cookie is
 `__Host-sid` with `HttpOnly`, `Secure` and `SameSite=Lax` when `PUBLIC_ORIGIN`
 is `https`, and a plain `sid` otherwise. A session lasts a year of disuse and
@@ -172,6 +176,10 @@ and cacheable.
 
 A request that is not a `GET` or `HEAD` must carry an `Origin` equal to
 `PUBLIC_ORIGIN` (or, with none configured, to its own `Host`), else it is a 403.
+A favourite is stored under the spelling of the city table (`gorzow+wielkopolski`
+and `Gorz%C3%B3w%20Wielkopolski` are one), never by its id, which shifts when the
+table is regenerated. The main page shows a star beside a city picked by name and
+a list of the favourites; a position fix has no name and cannot be starred.
 Never put a secret in a URL: the access log records the target, query string
 included.
 
