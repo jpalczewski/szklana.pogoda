@@ -262,6 +262,21 @@ body {
   margin-top: 1rem;
 }
 
+/* The account and about launchers share one row at the right edge of the
+ * window. Each keeps its own dialog, whose backdrop is fixed against the
+ * viewport and so is not a flex item here. */
+.launcher-row {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.launcher-row > .about-panel,
+.launcher-row > .account-panel {
+  margin-top: 0;
+}
+
 /* The about launcher sits at the right edge of the window. Its dialog
  * backdrop is fixed against the viewport, so it is not a flex item here. */
 .about-panel {
@@ -285,12 +300,17 @@ body {
 }
 
 .about-window,
+.account-window,
 .imgw-window {
   margin: auto;
 }
 
 .about-window {
   width: min(360px, 100%);
+}
+
+.account-window {
+  width: min(400px, 100%);
 }
 
 .app-window {
@@ -305,6 +325,7 @@ body {
  * hands off text selection and touch scrolling there. */
 .app-window > .title-bar,
 .about-window .title-bar,
+.account-window .title-bar,
 .imgw-window .title-bar {
   touch-action: none;
   user-select: none;
@@ -317,8 +338,46 @@ body {
   margin: 0.5rem 0 0;
 }
 
-.about-actions {
+.about-actions,
+.account-actions {
   justify-content: flex-end;
+}
+
+.account-actions {
+  margin-top: 0.75rem;
+}
+
+.account-window fieldset button {
+  margin-top: 0.25rem;
+}
+
+.account-intro,
+.account-note {
+  margin: 0.5rem 0;
+}
+
+.account-window fieldset {
+  margin-top: 0.75rem;
+}
+
+/* The code is meant to be read out and typed, so it is large, spaced and easy
+ * to select whole. */
+.account-code {
+  display: block;
+  font-family: monospace;
+  font-size: 1.25rem;
+  letter-spacing: 0.1em;
+  margin: 0.5rem 0;
+  user-select: all;
+}
+
+.account-warning,
+.account-message.failed {
+  font-weight: bold;
+}
+
+.account-message {
+  margin: 0.75rem 0 0;
 }
 
 /* 98.css tucks the panel flush under the tab strip, so the window body carries
