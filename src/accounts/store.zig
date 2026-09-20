@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const sqlite = @import("sqlite");
+const owned = @import("owned.zig");
 const token = @import("token.zig");
 
 /// How long a session may sit unused before it stops working. The session is the
@@ -34,24 +35,21 @@ const orphan_grace_seconds: i64 = 60 * 60;
 /// pile up when they are being created.
 const sweep_every_creations = 64;
 
-/// The tables whose rows belong to a user, by name. A table that carries a
-/// `user_id` must be listed: the sweep keeps a user alive while any of these
-/// holds a row of it, and moving an account has to move every one of them. A
-/// test compares this list with the schema, so a table added without it fails
-/// the build instead of losing data.
-pub const owned_tables = .{ "favorites", "sessions" };
+/// The tables whose rows belong to a user and how each moves them to another
+/// (see `owned.zig`). The sweep keeps a user alive while any of them holds a row
+/// of it.
+pub const owned_tables = owned.tables;
 
 const orphan_users_sql = blk: {
     var sql: []const u8 = "DELETE FROM users WHERE recovery_hash IS NULL AND created_at < ?";
     for (owned_tables) |table| {
-        sql = sql ++ " AND NOT EXISTS (SELECT 1 FROM " ++ table ++ " WHERE " ++ table ++ ".user_id = users.id)";
+        sql = sql ++ " AND NOT EXISTS (SELECT 1 FROM " ++ table.name ++ " WHERE " ++ table.name ++ ".user_id = users.id)";
     }
     break :blk sql;
 };
 
-/// The most cities one user may keep. It bounds a row count that a client
-/// controls, and it is far more than a person picks.
-pub const max_favorites = 50;
+/// The most cities one user may keep.
+pub const max_favorites = owned.max_favorites;
 
 /// What the store knows about a token.
 pub const Lookup = union(enum) {
@@ -350,7 +348,7 @@ test "every table that carries a user_id is listed as owned" {
     try std.testing.expectEqual(owned_tables.len, names.len);
     for (names) |name| {
         var listed = false;
-        inline for (owned_tables) |owned| listed = listed or std.mem.eql(u8, owned, name);
+        inline for (owned_tables) |table| listed = listed or std.mem.eql(u8, table.name, name);
         try std.testing.expect(listed);
     }
 }
@@ -423,6 +421,49 @@ test "deleting a user removes its favourites" {
     try store.addFavorite(user, "Zakopane", 0);
     try store.db.exec("DELETE FROM users WHERE id = ?", .{}, .{user});
     try std.testing.expectEqual(@as(i64, 0), try store.countRows("favorites"));
+}
+
+test "moving sessions gives them to the other user" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const from = try store.createUser(0);
+    const into = try store.createUser(0);
+    try store.createSession(from, hashOf(1), 0);
+    try store.createSession(from, hashOf(2), 0);
+
+    try owned.tables[0].move(&store.db, into, from);
+
+    try std.testing.expectEqual(Lookup{ .valid = into }, try store.lookup(hashOf(1), 1));
+    try std.testing.expectEqual(Lookup{ .valid = into }, try store.lookup(hashOf(2), 1));
+}
+
+test "moving favourites adds the missing cities, oldest first, up to the cap" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const from = try store.createUser(0);
+    const into = try store.createUser(0);
+    try store.addFavorite(into, "Zakopane", 5);
+    try store.addFavorite(from, "Zakopane", 1);
+    try store.addFavorite(from, "Gdańsk", 2);
+    try store.addFavorite(from, "Kraków", 3);
+
+    try owned.tables[1].move(&store.db, into, from);
+
+    const names = try store.favorites(std.testing.allocator, into);
+    defer freeNames(names);
+    // Zakopane was on both sides and is one favourite. The moved cities keep the
+    // time they were added, so they list before the one `into` added later.
+    try std.testing.expectEqual(@as(usize, 3), names.len);
+    try std.testing.expectEqualStrings("Gdańsk", names[0]);
+    try std.testing.expectEqualStrings("Kraków", names[1]);
+    try std.testing.expectEqualStrings("Zakopane", names[2]);
+
+    var name_buffer: [16]u8 = undefined;
+    for (0..max_favorites - 3) |index| {
+        try store.addFavorite(from, try std.fmt.bufPrint(&name_buffer, "Extra {d}", .{index}), 10 + @as(i64, @intCast(index)));
+    }
+    try owned.tables[1].move(&store.db, into, from);
+    try std.testing.expectEqual(@as(i64, max_favorites), (try store.db.one(i64, "SELECT COUNT(*) FROM favorites WHERE user_id = ?", .{}, .{into})).?);
 }
 
 test "the sweep runs by itself once enough users have been created" {
