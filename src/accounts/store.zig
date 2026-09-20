@@ -12,7 +12,9 @@
 //! transaction that belongs to somebody else.
 
 const std = @import("std");
+const Io = std.Io;
 const sqlite = @import("sqlite");
+const codes = @import("code.zig");
 const owned = @import("owned.zig");
 const token = @import("token.zig");
 
@@ -29,6 +31,13 @@ const touch_interval_seconds: i64 = 60 * 60;
 /// sweep cannot remove a user between the statement that creates it and the one
 /// that creates its session.
 const orphan_grace_seconds: i64 = 60 * 60;
+
+/// How long a transfer code can be typed after it was shown.
+pub const transfer_code_seconds: i64 = 10 * 60;
+
+/// A merge moves an account's rows, deletes the account and, when the delete
+/// finds a row that arrived after the move, moves again. This many rounds.
+const merge_rounds = 3;
 
 /// The sweep runs once per this many users created, in place of a task of its
 /// own: a background task would take one of the connection slots, and users only
@@ -51,6 +60,26 @@ const orphan_users_sql = blk: {
 /// The most cities one user may keep.
 pub const max_favorites = owned.max_favorites;
 
+/// Removes a user only when none of the tables that hold rows of it has one left.
+const delete_if_empty_sql = blk: {
+    var sql: []const u8 = "DELETE FROM users WHERE id = ?";
+    for (owned_tables) |table| {
+        sql = sql ++ " AND NOT EXISTS (SELECT 1 FROM " ++ table.name ++ " WHERE " ++ table.name ++ ".user_id = users.id)";
+    }
+    break :blk sql;
+};
+
+/// What redeeming a code came to.
+pub const Redeemed = struct {
+    /// The account the browser now belongs to.
+    user_id: i64,
+    /// The browser already held another account, and it was joined into this one.
+    merged: bool,
+    /// The browser was given a new session, so the caller sets its cookie. False
+    /// when it was already signed in to this account, and nothing changed.
+    signed_in: bool,
+};
+
 /// What the store knows about a token.
 pub const Lookup = union(enum) {
     /// A session that existed and has run out.
@@ -70,6 +99,12 @@ const SessionRow = struct {
 pub const Store = struct {
     db: sqlite.Db,
     creations: std.atomic.Value(u32) = .init(0),
+    /// Held across everything that has to see the accounts in one piece: issuing
+    /// a code, and redeeming one, which consumes it, joins two accounts and swaps
+    /// the browser's session. The connection is shared by every request in
+    /// flight, so a `BEGIN` here could swallow another request's statements;
+    /// this lock is what keeps two of these from interleaving instead.
+    merge_mutex: Io.Mutex = .init,
 
     pub fn initFile(path: [:0]const u8) !Store {
         var store: Store = .{
@@ -121,6 +156,11 @@ pub const Store = struct {
             \\);
             \\CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_id);
             \\CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions (expires_at);
+            \\CREATE TABLE IF NOT EXISTS transfer_codes (
+            \\    user_id INTEGER PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+            \\    code_hash BLOB NOT NULL UNIQUE,
+            \\    expires_at INTEGER NOT NULL
+            \\);
             \\CREATE TABLE IF NOT EXISTS favorites (
             \\    user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
             \\    city TEXT NOT NULL,
@@ -184,6 +224,8 @@ pub const Store = struct {
     /// A user with a recovery code stays, since the code is a way back in.
     pub fn sweep(self: *Store, now: i64) !void {
         try self.db.exec("DELETE FROM sessions WHERE expires_at <= ?", .{}, .{now});
+        // Before the users: a code that has run out is not a reason to keep one.
+        try self.db.exec("DELETE FROM transfer_codes WHERE expires_at <= ?", .{}, .{now});
         try self.db.exec(orphan_users_sql, .{}, .{now - orphan_grace_seconds});
     }
 
@@ -217,6 +259,116 @@ pub const Store = struct {
         var statement = try self.db.prepare("SELECT city FROM favorites WHERE user_id = ? ORDER BY created_at, city");
         defer statement.deinit();
         return statement.all([]const u8, allocator, .{}, .{user_id});
+    }
+
+    /// Makes `hash` the user's transfer code, replacing the one it had. The hash
+    /// is of a code the caller drew; `error.CodeCollision` means another user's
+    /// code has the same hash, and the caller draws again. The collision is looked
+    /// for and not left to the unique index: SQLite reports every constraint as
+    /// the same error, and a missing user would read as a collision. Nothing can
+    /// slip in between, since every way of issuing a code holds the same lock.
+    pub fn issueTransferCode(self: *Store, io: Io, user_id: i64, hash: token.Hash, now: i64) !void {
+        self.merge_mutex.lockUncancelable(io);
+        defer self.merge_mutex.unlock(io);
+        const taken = (try self.db.one(i64, "SELECT COUNT(*) FROM transfer_codes WHERE code_hash = ? AND user_id <> ?", .{}, .{ sqlite.Blob{ .data = &hash }, user_id })) orelse 0;
+        if (taken != 0) return error.CodeCollision;
+        try self.db.exec(
+            "INSERT INTO transfer_codes (user_id, code_hash, expires_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at",
+            .{},
+            .{ user_id, sqlite.Blob{ .data = &hash }, now + transfer_code_seconds },
+        );
+    }
+
+    /// Makes `hash` the user's recovery code; the previous one stops working.
+    /// `error.CodeCollision` as for a transfer code.
+    pub fn issueRecoveryCode(self: *Store, io: Io, user_id: i64, hash: token.Hash) !void {
+        self.merge_mutex.lockUncancelable(io);
+        defer self.merge_mutex.unlock(io);
+        const taken = (try self.db.one(i64, "SELECT COUNT(*) FROM users WHERE recovery_hash = ? AND id <> ?", .{}, .{ sqlite.Blob{ .data = &hash }, user_id })) orelse 0;
+        if (taken != 0) return error.CodeCollision;
+        try self.db.exec("UPDATE users SET recovery_hash = ? WHERE id = ?", .{}, .{ sqlite.Blob{ .data = &hash }, user_id });
+    }
+
+    pub fn hasRecovery(self: *Store, user_id: i64) !bool {
+        const present = (try self.db.one(i64, "SELECT recovery_hash IS NOT NULL FROM users WHERE id = ?", .{}, .{user_id})) orelse 0;
+        return present != 0;
+    }
+
+    /// Signs a browser in with a code someone typed.
+    ///
+    /// The code is consumed first: a transfer code is deleted by the statement
+    /// that finds it, so two requests with one code cannot both win, and a
+    /// recovery code is looked up. A code that is unknown, spent or out of time is
+    /// `error.InvalidCode`, without saying which. One that turns out to be for
+    /// the account the browser is already in changes nothing.
+    ///
+    /// Otherwise the browser gets a fresh session for the account, so a token
+    /// that leaked while it was anonymous does not become one that is signed in.
+    /// It is created before the old one is removed, so a failure cannot leave
+    /// the browser with none. When the browser already held another account, that
+    /// account is joined into this one: what the two keep is added together, and
+    /// its other sessions come along.
+    ///
+    /// `current` is the token the request came with, if any. The caller gives
+    /// `new_session` the hash of a token it drew.
+    pub fn redeem(self: *Store, io: Io, code: codes.Code, current: ?token.Hash, new_session: token.Hash, now: i64) !Redeemed {
+        self.merge_mutex.lockUncancelable(io);
+        defer self.merge_mutex.unlock(io);
+
+        const target = (try self.consume(code, now)) orelse return error.InvalidCode;
+        const held = if (current) |hash| try self.liveSessionUser(hash, now) else null;
+        if (held != null and held.? == target) return .{ .user_id = target, .merged = false, .signed_in = false };
+
+        try self.createSession(target, new_session, now);
+        if (held) |from| try self.mergeInto(target, from);
+        if (current) |hash| try self.deleteSession(hash);
+        return .{ .user_id = target, .merged = held != null, .signed_in = true };
+    }
+
+    fn consume(self: *Store, code: codes.Code, now: i64) !?i64 {
+        const hash = code.hash();
+        return switch (code.kind) {
+            .transfer => try self.db.one(
+                i64,
+                "DELETE FROM transfer_codes WHERE code_hash = ? AND expires_at > ? RETURNING user_id",
+                .{},
+                .{ sqlite.Blob{ .data = &hash }, now },
+            ),
+            .recovery => try self.db.one(i64, "SELECT id FROM users WHERE recovery_hash = ?", .{}, .{sqlite.Blob{ .data = &hash }}),
+        };
+    }
+
+    fn liveSessionUser(self: *Store, hash: token.Hash, now: i64) !?i64 {
+        return self.db.one(i64, "SELECT user_id FROM sessions WHERE token_hash = ? AND expires_at > ?", .{}, .{ sqlite.Blob{ .data = &hash }, now });
+    }
+
+    /// Joins `from` into `into` and removes `from`. The moves come first and the
+    /// delete only succeeds when nothing of `from` is left, so a request that was
+    /// already writing for `from` cannot have its row deleted with the account:
+    /// the delete refuses, and the next round moves that row too. Should rounds
+    /// run out, the account stays with what it has instead of losing it.
+    fn mergeInto(self: *Store, into: i64, from: i64) !void {
+        try self.adoptRecovery(into, from);
+        for (0..merge_rounds) |_| {
+            for (owned_tables) |table| try table.move(&self.db, into, from);
+            try self.db.exec(delete_if_empty_sql, .{}, .{from});
+            const left = (try self.db.one(i64, "SELECT COUNT(*) FROM users WHERE id = ?", .{}, .{from})) orelse 0;
+            if (left == 0) return;
+        }
+        std.log.warn("account {d} still holds rows after {d} moves into account {d}; it is left as it is", .{ from, merge_rounds, into });
+    }
+
+    /// A recovery code the person saved must not vanish with the account it was
+    /// made on. When the account being joined has none, it takes this one; when
+    /// it has its own, that one stays. The column is unique, so the code is
+    /// cleared from `from` before `into` takes it.
+    fn adoptRecovery(self: *Store, into: i64, from: i64) !void {
+        const Row = struct { recovery_hash: ?token.Hash };
+        const theirs = (try self.db.one(Row, "SELECT recovery_hash FROM users WHERE id = ?", .{}, .{from})) orelse return;
+        const hash = theirs.recovery_hash orelse return;
+        if (try self.hasRecovery(into)) return;
+        try self.db.exec("UPDATE users SET recovery_hash = NULL WHERE id = ?", .{}, .{from});
+        try self.db.exec("UPDATE users SET recovery_hash = ? WHERE id = ?", .{}, .{ sqlite.Blob{ .data = &hash }, into });
     }
 
     fn countRows(self: *Store, comptime table: []const u8) !i64 {
@@ -473,4 +625,221 @@ test "the sweep runs by itself once enough users have been created" {
     for (0..sweep_every_creations - 1) |_| _ = try store.createUser(0);
     _ = try store.createUser(orphan_grace_seconds + 1);
     try std.testing.expectEqual(@as(i64, 1), try store.countRows("users"));
+}
+
+const transfer_text = "ABCDE12345";
+const other_transfer_text = "FGHJK67890";
+const recovery_text = "0123456789ABCDEFGHJK";
+const other_recovery_text = "KJHGFEDCBA9876543210";
+
+fn codeOf(text: []const u8) codes.Code {
+    return codes.normalise(text).?;
+}
+
+fn sessionIn(store: *Store, user: i64, seed: u8) !void {
+    try store.createSession(user, hashOf(seed), 0);
+}
+
+test "a transfer code signs a browser in once" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const account = try store.createUser(0);
+    try store.issueTransferCode(std.testing.io, account, codeOf(transfer_text).hash(), 100);
+
+    const signed_in = try store.redeem(std.testing.io, codeOf(transfer_text), null, hashOf(9), 101);
+    try std.testing.expectEqual(Redeemed{ .user_id = account, .merged = false, .signed_in = true }, signed_in);
+    try std.testing.expectEqual(Lookup{ .valid = account }, try store.lookup(hashOf(9), 102));
+
+    try std.testing.expectError(error.InvalidCode, store.redeem(std.testing.io, codeOf(transfer_text), null, hashOf(8), 102));
+    try std.testing.expectEqual(Lookup.unknown, try store.lookup(hashOf(8), 102));
+}
+
+test "a transfer code works until it runs out and not at that moment" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const account = try store.createUser(0);
+    try store.issueTransferCode(std.testing.io, account, codeOf(transfer_text).hash(), 0);
+
+    try std.testing.expectError(error.InvalidCode, store.redeem(std.testing.io, codeOf(transfer_text), null, hashOf(9), transfer_code_seconds));
+    // Being refused as too late does not use the code up before it could be tried.
+    try store.issueTransferCode(std.testing.io, account, codeOf(transfer_text).hash(), 1);
+    _ = try store.redeem(std.testing.io, codeOf(transfer_text), null, hashOf(9), transfer_code_seconds);
+}
+
+test "a code nobody issued is refused, whatever its kind" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    _ = try store.createUser(0);
+    try std.testing.expectError(error.InvalidCode, store.redeem(std.testing.io, codeOf(transfer_text), null, hashOf(9), 1));
+    try std.testing.expectError(error.InvalidCode, store.redeem(std.testing.io, codeOf(recovery_text), null, hashOf(9), 1));
+}
+
+test "a new transfer code replaces the one before it" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const account = try store.createUser(0);
+    try store.issueTransferCode(std.testing.io, account, codeOf(transfer_text).hash(), 0);
+    try store.issueTransferCode(std.testing.io, account, codeOf(other_transfer_text).hash(), 0);
+
+    try std.testing.expectError(error.InvalidCode, store.redeem(std.testing.io, codeOf(transfer_text), null, hashOf(9), 1));
+    _ = try store.redeem(std.testing.io, codeOf(other_transfer_text), null, hashOf(9), 1);
+}
+
+test "two users cannot hold the same code" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const first = try store.createUser(0);
+    const second = try store.createUser(0);
+    try store.issueTransferCode(std.testing.io, first, codeOf(transfer_text).hash(), 0);
+    try std.testing.expectError(error.CodeCollision, store.issueTransferCode(std.testing.io, second, codeOf(transfer_text).hash(), 0));
+
+    try store.issueRecoveryCode(std.testing.io, first, codeOf(recovery_text).hash());
+    try std.testing.expectError(error.CodeCollision, store.issueRecoveryCode(std.testing.io, second, codeOf(recovery_text).hash()));
+}
+
+test "a recovery code can be used again and a new one retires it" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const account = try store.createUser(0);
+    try std.testing.expect(!try store.hasRecovery(account));
+    try store.issueRecoveryCode(std.testing.io, account, codeOf(recovery_text).hash());
+    try std.testing.expect(try store.hasRecovery(account));
+
+    _ = try store.redeem(std.testing.io, codeOf(recovery_text), null, hashOf(1), 1);
+    _ = try store.redeem(std.testing.io, codeOf(recovery_text), null, hashOf(2), 2);
+
+    try store.issueRecoveryCode(std.testing.io, account, codeOf(other_recovery_text).hash());
+    try std.testing.expectError(error.InvalidCode, store.redeem(std.testing.io, codeOf(recovery_text), null, hashOf(3), 3));
+    _ = try store.redeem(std.testing.io, codeOf(other_recovery_text), null, hashOf(3), 3);
+}
+
+test "a browser already in the account is left as it is, and the code is still spent" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const account = try store.createUser(0);
+    try sessionIn(&store, account, 1);
+    try store.issueTransferCode(std.testing.io, account, codeOf(transfer_text).hash(), 0);
+
+    const result = try store.redeem(std.testing.io, codeOf(transfer_text), hashOf(1), hashOf(9), 1);
+    try std.testing.expectEqual(Redeemed{ .user_id = account, .merged = false, .signed_in = false }, result);
+    try std.testing.expectEqual(Lookup{ .valid = account }, try store.lookup(hashOf(1), 2));
+    try std.testing.expectEqual(Lookup.unknown, try store.lookup(hashOf(9), 2));
+    try std.testing.expectError(error.InvalidCode, store.redeem(std.testing.io, codeOf(transfer_text), null, hashOf(9), 2));
+}
+
+test "signing in swaps the browser's session for a new one" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const account = try store.createUser(0);
+    const anonymous = try store.createUser(0);
+    try sessionIn(&store, anonymous, 1);
+    try store.issueTransferCode(std.testing.io, account, codeOf(transfer_text).hash(), 0);
+
+    const result = try store.redeem(std.testing.io, codeOf(transfer_text), hashOf(1), hashOf(9), 1);
+    try std.testing.expect(result.signed_in);
+    try std.testing.expectEqual(Lookup.unknown, try store.lookup(hashOf(1), 2));
+    try std.testing.expectEqual(Lookup{ .valid = account }, try store.lookup(hashOf(9), 2));
+}
+
+test "an anonymous account is joined into the one signed in to" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const account = try store.createUser(0);
+    const anonymous = try store.createUser(0);
+    try store.addFavorite(account, "Zakopane", 1);
+    try store.addFavorite(anonymous, "Gdańsk", 2);
+    try store.addFavorite(anonymous, "Zakopane", 3);
+    try sessionIn(&store, anonymous, 1);
+    try sessionIn(&store, anonymous, 2);
+    try store.issueTransferCode(std.testing.io, account, codeOf(transfer_text).hash(), 0);
+
+    const result = try store.redeem(std.testing.io, codeOf(transfer_text), hashOf(1), hashOf(9), 1);
+    try std.testing.expectEqual(Redeemed{ .user_id = account, .merged = true, .signed_in = true }, result);
+
+    const names = try store.favorites(std.testing.allocator, account);
+    defer freeNames(names);
+    try std.testing.expectEqual(@as(usize, 2), names.len);
+    try std.testing.expectEqualStrings("Zakopane", names[0]);
+    try std.testing.expectEqualStrings("Gdańsk", names[1]);
+
+    // The other browser of the joined account keeps working, now as the account.
+    try std.testing.expectEqual(Lookup{ .valid = account }, try store.lookup(hashOf(2), 2));
+    try std.testing.expectEqual(Lookup.unknown, try store.lookup(hashOf(1), 2));
+    try std.testing.expectEqual(@as(i64, 1), try store.countRows("users"));
+}
+
+test "joining accounts drops what does not fit under the cap and still removes the account" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const account = try store.createUser(0);
+    const anonymous = try store.createUser(0);
+    var name_buffer: [16]u8 = undefined;
+    for (0..max_favorites) |index| {
+        try store.addFavorite(account, try std.fmt.bufPrint(&name_buffer, "Mine {d}", .{index}), 1);
+    }
+    try store.addFavorite(anonymous, "Zakopane", 1);
+    try sessionIn(&store, anonymous, 1);
+    try store.issueTransferCode(std.testing.io, account, codeOf(transfer_text).hash(), 0);
+
+    _ = try store.redeem(std.testing.io, codeOf(transfer_text), hashOf(1), hashOf(9), 1);
+    try std.testing.expectEqual(@as(i64, 1), try store.countRows("users"));
+    try std.testing.expectEqual(@as(i64, max_favorites), try store.countRows("favorites"));
+}
+
+test "the account being joined gives its recovery code to one that has none" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const account = try store.createUser(0);
+    const anonymous = try store.createUser(0);
+    try store.issueRecoveryCode(std.testing.io, anonymous, codeOf(recovery_text).hash());
+    try sessionIn(&store, anonymous, 1);
+    try store.issueTransferCode(std.testing.io, account, codeOf(transfer_text).hash(), 0);
+
+    _ = try store.redeem(std.testing.io, codeOf(transfer_text), hashOf(1), hashOf(9), 1);
+    try std.testing.expect(try store.hasRecovery(account));
+    const back = try store.redeem(std.testing.io, codeOf(recovery_text), null, hashOf(8), 2);
+    try std.testing.expectEqual(account, back.user_id);
+}
+
+test "an account that has its own recovery code keeps it and the other one is gone" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const account = try store.createUser(0);
+    const anonymous = try store.createUser(0);
+    try store.issueRecoveryCode(std.testing.io, account, codeOf(other_recovery_text).hash());
+    try store.issueRecoveryCode(std.testing.io, anonymous, codeOf(recovery_text).hash());
+    try sessionIn(&store, anonymous, 1);
+    try store.issueTransferCode(std.testing.io, account, codeOf(transfer_text).hash(), 0);
+
+    _ = try store.redeem(std.testing.io, codeOf(transfer_text), hashOf(1), hashOf(9), 1);
+    try std.testing.expectError(error.InvalidCode, store.redeem(std.testing.io, codeOf(recovery_text), null, hashOf(8), 2));
+    _ = try store.redeem(std.testing.io, codeOf(other_recovery_text), null, hashOf(8), 2);
+}
+
+test "an account is not deleted while a row of it is left" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const user = try store.createUser(0);
+    try store.addFavorite(user, "Zakopane", 0);
+
+    try store.db.exec(delete_if_empty_sql, .{}, .{user});
+    try std.testing.expectEqual(@as(i64, 1), try store.countRows("users"));
+
+    try store.removeFavorite(user, "Zakopane");
+    try store.db.exec(delete_if_empty_sql, .{}, .{user});
+    try std.testing.expectEqual(@as(i64, 0), try store.countRows("users"));
+}
+
+test "the sweep removes a transfer code that ran out and then the user it kept alive" {
+    var store = try Store.initMemory();
+    defer store.deinit();
+    const user = try store.createUser(0);
+    try store.issueTransferCode(std.testing.io, user, codeOf(transfer_text).hash(), 0);
+
+    try store.sweep(orphan_grace_seconds);
+    try std.testing.expectEqual(@as(i64, 1), try store.countRows("users"));
+
+    try store.sweep(transfer_code_seconds + orphan_grace_seconds);
+    try std.testing.expectEqual(@as(i64, 0), try store.countRows("transfer_codes"));
+    try std.testing.expectEqual(@as(i64, 0), try store.countRows("users"));
 }

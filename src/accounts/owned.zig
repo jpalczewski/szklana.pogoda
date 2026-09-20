@@ -19,8 +19,10 @@ pub const max_favorites = 50;
 
 pub const Table = struct {
     name: []const u8,
-    /// Gives user `into` the rows of user `from`. What it leaves behind is
-    /// deleted with `from`, so a move may skip a row that `into` already has.
+    /// Gives user `into` the rows of user `from` and leaves `from` with none of
+    /// them: what does not fit, or is `into`'s already, is dropped, not left
+    /// behind. That is what lets a merge tell a row that arrived after the move
+    /// from one that was never going to move.
     move: *const fn (*sqlite.Db, i64, i64) anyerror!void,
 };
 
@@ -29,6 +31,7 @@ pub const Table = struct {
 pub const tables = [_]Table{
     .{ .name = "sessions", .move = moveSessions },
     .{ .name = "favorites", .move = moveFavorites },
+    .{ .name = "transfer_codes", .move = moveTransferCodes },
 };
 
 fn moveSessions(db: *sqlite.Db, into: i64, from: i64) anyerror!void {
@@ -36,9 +39,10 @@ fn moveSessions(db: *sqlite.Db, into: i64, from: i64) anyerror!void {
 }
 
 /// Adds the cities `into` does not have yet, oldest first, until it holds
-/// `max_favorites`. A city both users have is one favourite. Cities `into`
-/// already has are left out of the selection and not merely ignored on insert,
-/// so they do not use up the room the new ones are counted against.
+/// `max_favorites`, and drops what is left. A city both users have is one
+/// favourite. Cities `into` already has are left out of the selection and not
+/// merely ignored on insert, so they do not use up the room the new ones are
+/// counted against.
 fn moveFavorites(db: *sqlite.Db, into: i64, from: i64) anyerror!void {
     try db.exec(
         comptime std.fmt.comptimePrint(
@@ -51,4 +55,11 @@ fn moveFavorites(db: *sqlite.Db, into: i64, from: i64) anyerror!void {
         .{},
         .{ into, from, into, into },
     );
+    try db.exec("DELETE FROM favorites WHERE user_id = ?", .{}, .{from});
+}
+
+/// A transfer code belongs to the browser that asked for it and is not part of
+/// what the account keeps; the receiver has its own, and there is one per user.
+fn moveTransferCodes(db: *sqlite.Db, _: i64, from: i64) anyerror!void {
+    try db.exec("DELETE FROM transfer_codes WHERE user_id = ?", .{}, .{from});
 }
