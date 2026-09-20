@@ -20,6 +20,12 @@ pub const Request = struct {
     client_ip: []const u8 = "",
 };
 
+pub const Browser = struct {
+    user_id: i64,
+    /// The `Cookie` header value.
+    cookie: []const u8,
+};
+
 pub const Site = struct {
     store: accounts.Store,
     arena: std.heap.ArenaAllocator,
@@ -55,6 +61,17 @@ pub const Site = struct {
             .client_ip = request.client_ip,
         };
         return handler(&self.app, &context);
+    }
+
+    /// A browser that already has a session: a new user and the cookie header
+    /// its requests carry.
+    pub fn browser(self: *Site) !Browser {
+        const now = std.Io.Clock.real.now(std.testing.io).toSeconds();
+        const text = try accounts.token.generate(std.testing.io);
+        const user_id = try self.store.createUser(now);
+        try self.store.createSession(user_id, accounts.token.hash(&text).?, now);
+        const cookie = try std.fmt.allocPrint(self.arena.allocator(), "sid={s}", .{&text});
+        return .{ .user_id = user_id, .cookie = cookie };
     }
 
     /// `send` with only a method and headers.

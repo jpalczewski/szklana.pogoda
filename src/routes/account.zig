@@ -64,11 +64,18 @@ pub fn ensure(comptime handler: SessionHandler) router.Handler {
     }.handle;
 }
 
-/// Says whether the request comes with a session: `{"session": true}`.
+/// Says whether the request comes with a session and whether its account has a
+/// recovery code: `{"session": true, "has_recovery": false}`.
 pub const sessionStatus = optional(sessionStatusHandler);
 
-fn sessionStatusHandler(_: *router.App, request: *router.RequestContext, session: ?Session) router.AppError!router.Response {
-    return router.Response.jsonValue(request.allocator, .ok, .{ .session = session != null });
+fn sessionStatusHandler(app: *router.App, request: *router.RequestContext, session: ?Session) router.AppError!router.Response {
+    const caller = session orelse return router.Response.jsonValue(request.allocator, .ok, .{ .session = false, .has_recovery = false });
+    const store = app.accounts orelse return error.AccountsUnavailable;
+    const has_recovery = store.hasRecovery(caller.user_id) catch |err| {
+        std.log.err("reading whether the account has a recovery code failed: {t}", .{err});
+        return error.AccountsUnavailable;
+    };
+    return router.Response.jsonValue(request.allocator, .ok, .{ .session = true, .has_recovery = has_recovery });
 }
 
 /// Ends the caller's session and tells the browser to drop the cookie. The
@@ -179,7 +186,7 @@ fn recordLookup(app: *router.App, result: metrics.SessionResult) void {
     if (app.metrics) |registry| registry.sessionLookup(result);
 }
 
-fn nowSeconds(io: Io) i64 {
+pub fn nowSeconds(io: Io) i64 {
     return Io.Clock.real.now(io).toSeconds();
 }
 
@@ -198,7 +205,7 @@ test "a request without a cookie has no session and the answer is not cacheable"
     defer site.destroy();
 
     const response = try site.call(sessionStatus, .GET, &.{});
-    try std.testing.expectEqualStrings("{\"session\":false}", response.body);
+    try std.testing.expectEqualStrings("{\"session\":false,\"has_recovery\":false}", response.body);
     try std.testing.expectEqualStrings("private, no-store", response.cache_control.?);
     try std.testing.expect(response.set_cookie == null);
 }
@@ -220,7 +227,7 @@ test "ensure makes a user on the first request and recognises the browser after"
     const second = try site.call(keep, .POST, &.{ same_site, local_host, returning });
     try std.testing.expect(second.set_cookie == null);
     try std.testing.expectEqualStrings("{\"user\":1}", second.body);
-    try std.testing.expectEqualStrings("{\"session\":true}", (try site.call(sessionStatus, .GET, &.{returning})).body);
+    try std.testing.expectEqualStrings("{\"session\":true,\"has_recovery\":false}", (try site.call(sessionStatus, .GET, &.{returning})).body);
 }
 
 test "require answers 401 without a session and runs the handler with one" {
@@ -238,9 +245,9 @@ test "require answers 401 without a session and runs the handler with one" {
 test "a cookie that is not a token, or that nobody issued, is no session" {
     const site = try Site.create();
     defer site.destroy();
-    try std.testing.expectEqualStrings("{\"session\":false}", (try site.call(sessionStatus, .GET, &.{.{ .name = "Cookie", .value = "sid=garbage" }})).body);
+    try std.testing.expectEqualStrings("{\"session\":false,\"has_recovery\":false}", (try site.call(sessionStatus, .GET, &.{.{ .name = "Cookie", .value = "sid=garbage" }})).body);
     const forged = "sid=" ++ "A" ** accounts.token.text_len;
-    try std.testing.expectEqualStrings("{\"session\":false}", (try site.call(sessionStatus, .GET, &.{.{ .name = "Cookie", .value = forged }})).body);
+    try std.testing.expectEqualStrings("{\"session\":false,\"has_recovery\":false}", (try site.call(sessionStatus, .GET, &.{.{ .name = "Cookie", .value = forged }})).body);
 }
 
 test "a request that changes state must come from the site's own origin" {
@@ -277,11 +284,11 @@ test "signing out ends the session, clears the cookie and needs the site's origi
     const returning: router.Header = .{ .name = "Cookie", .value = cookie_header };
 
     try std.testing.expectError(error.Forbidden, site.call(signOut, .DELETE, &.{returning}));
-    try std.testing.expectEqualStrings("{\"session\":true}", (try site.call(sessionStatus, .GET, &.{returning})).body);
+    try std.testing.expectEqualStrings("{\"session\":true,\"has_recovery\":false}", (try site.call(sessionStatus, .GET, &.{returning})).body);
 
     const response = try site.call(signOut, .DELETE, &.{ same_site, local_host, returning });
     try std.testing.expect(std.mem.find(u8, response.set_cookie.?, "Max-Age=0") != null);
-    try std.testing.expectEqualStrings("{\"session\":false}", (try site.call(sessionStatus, .GET, &.{returning})).body);
+    try std.testing.expectEqualStrings("{\"session\":false,\"has_recovery\":false}", (try site.call(sessionStatus, .GET, &.{returning})).body);
     try std.testing.expectError(error.Unauthorized, site.call(signOut, .DELETE, &.{ same_site, local_host, returning }));
 }
 

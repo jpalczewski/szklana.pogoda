@@ -19,6 +19,8 @@ pub const App = struct {
     accounts: ?*accounts.Store = null,
     /// Caps how often one address may make an account; null (tests) is no cap.
     new_session_limiter: ?*accounts.Limiter = null,
+    /// Caps how often one address may ask for a sign-in code; null is no cap.
+    code_limiter: ?*accounts.Limiter = null,
     /// How the session cookie is named and flagged, which follows the scheme the
     /// site is served over.
     cookie_policy: accounts.cookie.Policy = .plain,

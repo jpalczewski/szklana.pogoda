@@ -7,6 +7,7 @@ const server = @import("server.zig");
 const api = @import("routes/api.zig");
 const account_route = @import("routes/account.zig");
 const favorites_route = @import("routes/favorites.zig");
+const credentials_route = @import("routes/credentials.zig");
 const accounts = @import("accounts/mod.zig");
 const pages = @import("routes/pages.zig");
 const storm = @import("routes/storm.zig");
@@ -54,6 +55,7 @@ const modules = .{
     accounts,
     account_route,
     favorites_route,
+    credentials_route,
 };
 
 /// Forces the semantic analyzer over every function of a module, so production
@@ -171,6 +173,9 @@ const Config = struct {
     }
 };
 
+/// How many sign-in codes one address may ask for in an hour.
+const code_requests_per_hour = 20;
+
 const routes = [_]router.Route{
     .{ .method = .GET, .path = "/", .handler = pages.home },
     .{ .method = .GET, .path = "/en/", .handler = pages.homeEn },
@@ -195,6 +200,8 @@ const routes = [_]router.Route{
     .{ .method = .GET, .path = "/api/forecast", .handler = forecast_route.forecast },
     .{ .method = .GET, .path = "/api/me", .handler = account_route.sessionStatus },
     .{ .method = .DELETE, .path = "/api/me/session", .handler = account_route.signOut },
+    .{ .method = .POST, .path = "/api/me/transfer-code", .handler = credentials_route.transferCode },
+    .{ .method = .POST, .path = "/api/me/recovery-code", .handler = credentials_route.recoveryCode },
     .{ .method = .GET, .path = "/api/me/favorites", .handler = favorites_route.list },
     .{ .method = .POST, .path = "/api/me/favorites", .handler = favorites_route.add },
     .{ .method = .DELETE, .path = "/api/me/favorites", .handler = favorites_route.remove },
@@ -231,6 +238,10 @@ pub fn main(init: std.process.Init) !void {
     defer account_store.deinit();
     var new_session_limiter: accounts.Limiter = .init(gpa, config.new_sessions_per_hour, std.time.s_per_hour, .allow);
     defer new_session_limiter.deinit();
+    // Asking for a code is rare, so a table that fills up refuses: a stolen
+    // cookie must not be able to mint recovery codes past the limit.
+    var code_limiter: accounts.Limiter = .init(gpa, code_requests_per_hour, std.time.s_per_hour, .refuse);
+    defer code_limiter.deinit();
     if (config.public_origin == null) {
         std.log.warn("PUBLIC_ORIGIN is not set: session cookies are not Secure and the Origin of a state-changing request is compared with its Host", .{});
     }
@@ -254,7 +265,7 @@ pub fn main(init: std.process.Init) !void {
     var metrics_listener = try metrics_address.listen(io, .{ .reuse_address = true });
     defer metrics_listener.deinit(io);
 
-    var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trusted_proxies = config.trusted_proxies, .metrics = &metrics_registry, .weather_store = &observations, .accounts = &account_store, .new_session_limiter = &new_session_limiter, .cookie_policy = config.cookiePolicy(), .public_origin = config.public_origin, .storm = &storm_client, .forecast = &forecast_client, .io = io };
+    var app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trusted_proxies = config.trusted_proxies, .metrics = &metrics_registry, .weather_store = &observations, .accounts = &account_store, .new_session_limiter = &new_session_limiter, .code_limiter = &code_limiter, .cookie_policy = config.cookiePolicy(), .public_origin = config.public_origin, .storm = &storm_client, .forecast = &forecast_client, .io = io };
     var metrics_app: router.App = .{ .max_body_bytes = config.max_body_bytes, .trusted_proxies = config.trusted_proxies, .metrics = &metrics_registry };
     var connections: Io.Group = .init;
     defer connections.await(io) catch |err| std.log.warn("connections did not shut down cleanly: {t}", .{err});
