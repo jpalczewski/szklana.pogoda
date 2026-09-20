@@ -32,6 +32,11 @@ document.addEventListener("alpine:init", () => {
       has_favorites: false,
       /* `{ code, until }` with `until` in milliseconds. */
       transfer: null,
+      /* The address that signs a browser in with the transfer code, and its QR
+       * code as `{ side, view_box, path }`. Both are secrets exactly as the code
+       * is, and go with it. */
+      link: "",
+      qr: null,
       recovery: "",
       remaining: 0,
       timer: null,
@@ -55,9 +60,16 @@ document.addEventListener("alpine:init", () => {
 
       /* What is on screen only while the dialog is open. */
       forget() {
-        this.transfer = null;
+        this.drop_transfer();
         this.recovery = "";
         this.code = "";
+      },
+
+      /* The transfer code and everything made from it leave the screen together. */
+      drop_transfer() {
+        this.transfer = null;
+        this.link = "";
+        this.qr = null;
         this.stop_timer();
       },
 
@@ -111,6 +123,8 @@ document.addEventListener("alpine:init", () => {
             return;
           }
           this.transfer = { code: result.data.code, until: Date.now() + result.data.expires_in_seconds * 1000 };
+          this.link = sign_in_link(result.data.code);
+          this.qr = qr_code(this.link);
           this.start_timer();
         } catch (err) {
           console.error("transfer code request failed", err);
@@ -134,10 +148,7 @@ document.addEventListener("alpine:init", () => {
       /* A code that has run out is taken off the screen, since it no longer works. */
       tick() {
         this.remaining = Math.max(0, Math.ceil(((this.transfer?.until ?? 0) - Date.now()) / 1000));
-        if (this.remaining === 0) {
-          this.transfer = null;
-          this.stop_timer();
-        }
+        if (this.remaining === 0) this.drop_transfer();
       },
 
       get remaining_text() {
@@ -787,6 +798,45 @@ function modal() {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+/* The address another browser opens to sign in with a transfer code. The code
+ * is in the fragment, which a browser never sends to the server, so it is in
+ * neither the access log nor a `Referer`. The path keeps the page's language. */
+function sign_in_link(code) {
+  return `${location.origin}${location.pathname}#code=${code.replaceAll("-", "")}`;
+}
+
+/* A QR code for `text` as what an inline SVG needs: its side in modules, a
+ * `viewBox` and one path of the dark modules, with the four-module quiet zone the
+ * standard asks for. Runs of dark modules in a row are one segment, which keeps
+ * the path short. Null when the library is not there or the text does not fit,
+ * and the caller then shows the code as text alone. */
+function qr_code(text) {
+  if (typeof qrcodegen === "undefined") return null;
+  let symbol;
+  try {
+    symbol = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.MEDIUM);
+  } catch (err) {
+    console.error("QR code failed", err);
+    return null;
+  }
+  const border = 4;
+  const segments = [];
+  for (let y = 0; y < symbol.size; y++) {
+    let x = 0;
+    while (x < symbol.size) {
+      if (!symbol.getModule(x, y)) {
+        x++;
+        continue;
+      }
+      const start = x;
+      while (x < symbol.size && symbol.getModule(x, y)) x++;
+      segments.push(`M${start + border} ${y + border}h${x - start}v1h-${x - start}z`);
+    }
+  }
+  const side = symbol.size + 2 * border;
+  return { side, view_box: `0 0 ${side} ${side}`, path: segments.join("") };
 }
 
 /* How many stations the nearest list keeps. The list box shows twelve rows, so

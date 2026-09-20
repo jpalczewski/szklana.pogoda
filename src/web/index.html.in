@@ -695,8 +695,19 @@
                   <legend>{{account_transfer_legend}}</legend>
                   <div x-show="transfer" x-cloak>
                     <output class="account-code" x-text="transfer?.code"></output>
+                    <div class="account-qr" x-show="qr" x-cloak role="img" aria-label="{{account_qr_label}}">
+                      <svg aria-hidden="true" focusable="false" :view-box.camel="qr?.view_box">
+                        <rect x="0" y="0" :width="qr?.side" :height="qr?.side" fill="#fff" />
+                        <path :d="qr?.path" fill="#000" shape-rendering="crispEdges" />
+                      </svg>
+                    </div>
                     <p class="account-note">{{account_transfer_note}} {{account_transfer_left}}: <span x-text="remaining_text"></span></p>
-                    <button type="button" x-show="clipboard" x-cloak @click="copy(transfer.code)">{{account_copy}}</button>
+                    <p class="account-note" x-show="qr" x-cloak>{{account_qr_note}}</p>
+                    <div class="field-row account-copy">
+                      <button type="button" x-show="clipboard" x-cloak @click="copy(transfer.code)">{{account_copy}}</button>
+                      <button type="button" x-show="clipboard" x-cloak @click="copy(link)">{{account_copy_link}}</button>
+                      <button type="button" @click="drop_transfer">{{account_hide}}</button>
+                    </div>
                   </div>
                   <button type="button" x-show="!transfer" :disabled="busy" @click="show_transfer">{{account_transfer_show}}</button>
                 </fieldset>
