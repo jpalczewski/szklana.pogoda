@@ -1,3 +1,25 @@
+/* A sign-in link (`/#code=ABCDE12345`, made by `sign_in_link`) carries a transfer
+ * code in its fragment. It is taken out of the address the moment this script
+ * runs (or, in a tab that already shows the page, the moment the fragment
+ * changes), before anything can read, copy or share the address, and it is kept
+ * in memory only. Only the ten characters of a transfer code count: a login code is
+ * permanent and must never work as a link. A page that is only being prerendered
+ * is not being looked at, so it waits until it is shown. */
+const arrival_ready = document.prerendering
+  ? new Promise((resolve) => document.addEventListener("prerenderingchange", resolve, { once: true })).then(take_arrival_code)
+  : Promise.resolve(take_arrival_code());
+
+function take_arrival_code() {
+  const fragment = location.hash;
+  if (!fragment.startsWith("#code=")) return null;
+  try {
+    history.replaceState(history.state, "", location.pathname + location.search);
+  } catch {
+    /* The address is a convenience; the code is used all the same. */
+  }
+  return /^#code=([0-9A-Za-z]{10})$/.exec(fragment)?.[1] ?? null;
+}
+
 document.addEventListener("alpine:init", () => {
   Alpine.data("main_window", main_window);
   Alpine.data("forecast", forecast);
@@ -27,9 +49,12 @@ document.addEventListener("alpine:init", () => {
       ...base,
       session: false,
       has_recovery: false,
-      /* Whether this browser holds favourites that signing in would join to the
-       * account it signs in to, which is worth saying before it happens. */
-      has_favorites: false,
+      /* How many favourites this browser holds, which signing in would join to
+       * the account it signs in to: worth saying before it happens. */
+      favorites_count: 0,
+      /* The transfer code a sign-in link brought, while the person is asked
+       * whether to use it. It is never used without that. */
+      pending: "",
       /* `{ code, until }` with `until` in milliseconds. */
       transfer: null,
       /* The address that signs a browser in with the transfer code, and its QR
@@ -46,10 +71,35 @@ document.addEventListener("alpine:init", () => {
       failed: false,
       clipboard: Boolean(navigator.clipboard?.writeText),
 
+      init() {
+        arrival_ready.then((code) => {
+          if (code) this.arrive(code);
+        });
+      },
+
+      /* A link pasted into a tab that already shows this page does not reload it:
+       * the browser only changes the fragment and says `hashchange`. */
+      arrive_from_address() {
+        const code = take_arrival_code();
+        if (code) this.arrive(code);
+      },
+
       show() {
         base.show.call(this);
         this.message = "";
         this.load();
+        if (this.pending) this.focus_cancel();
+      },
+
+      /* Asked whether to sign in, the safe answer has the focus. A browser that
+       * follows a link to a fragment moves the focus to the page after the event
+       * that opened the dialog, so it is set again a moment later. */
+      focus_cancel() {
+        const focus = () => {
+          if (this.open && this.pending) this.$refs.cancel?.focus();
+        };
+        this.$nextTick(focus);
+        setTimeout(focus, 100);
       },
 
       hide() {
@@ -63,6 +113,23 @@ document.addEventListener("alpine:init", () => {
         this.drop_transfer();
         this.recovery = "";
         this.code = "";
+        this.pending = "";
+      },
+
+      /* Someone opened a sign-in link. Nothing happens until they say so: a link
+       * is easy to send, and one made from somebody else's code would put this
+       * browser's favourites into that account. */
+      arrive(code) {
+        this.pending = code;
+        this.show();
+      },
+
+      cancel_arrival() {
+        this.hide();
+      },
+
+      confirm_arrival() {
+        this.redeem(this.pending, true);
       },
 
       /* The transfer code and everything made from it leave the screen together. */
@@ -80,7 +147,7 @@ document.addEventListener("alpine:init", () => {
           const status = await me.json();
           this.session = status.session;
           this.has_recovery = status.has_recovery;
-          this.has_favorites = (await favorites.json()).favorites.length > 0;
+          this.favorites_count = (await favorites.json()).favorites.length;
         } catch (err) {
           console.error("account request failed", err);
           this.tell(document.body.dataset.accountUnavailable, true);
@@ -177,14 +244,22 @@ document.addEventListener("alpine:init", () => {
         }
       },
 
-      async sign_in() {
-        const code = this.code.trim();
+      /* The code typed into the field. */
+      sign_in() {
+        return this.redeem(this.code.trim(), false);
+      },
+
+      /* Signs in with `code`. A code that came from a link is dropped when the
+       * server says it is no good: it cannot become good again, and the typed
+       * form is what is left. */
+      async redeem(code, from_link) {
         if (this.busy || code === "") return;
         this.busy = true;
         this.message = "";
         try {
           const result = await this.send("POST", "/api/me/login", { code });
           if (!result.ok) {
+            if (from_link && result.status === 401) this.pending = "";
             this.tell(this.failure(result.status), true);
             return;
           }

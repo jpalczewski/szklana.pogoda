@@ -651,7 +651,7 @@
         </div>
       </div>
       <div class="launcher-row">
-        <div class="account-panel" x-data="account" @keydown.escape.window="hide">
+        <div class="account-panel" x-data="account" @keydown.escape.window="hide" @hashchange.window="arrive_from_address">
           <button
             type="button"
             x-ref="launcher"
@@ -689,9 +689,20 @@
                 </div>
               </div>
               <div class="window-body">
-                <p class="account-intro">{{account_intro}}</p>
-                <p class="account-intro" x-show="!session" x-cloak>{{account_none}}</p>
-                <fieldset x-show="session" x-cloak>
+                <fieldset class="account-arrival" x-show="pending" x-cloak>
+                  <legend>{{account_arrival_legend}}</legend>
+                  <p class="account-note">{{account_arrival_body}}</p>
+                  <p class="account-note" x-show="favorites_count > 0" x-cloak>
+                    {{account_arrival_joined}} <strong x-text="favorites_count"></strong>
+                  </p>
+                  <div class="field-row account-arrival-actions">
+                    <button type="button" x-ref="cancel" @click="cancel_arrival">{{account_arrival_cancel}}</button>
+                    <button type="button" :disabled="busy" @click="confirm_arrival">{{account_arrival_confirm}}</button>
+                  </div>
+                </fieldset>
+                <p class="account-intro" x-show="!pending" x-cloak>{{account_intro}}</p>
+                <p class="account-intro" x-show="!session && !pending" x-cloak>{{account_none}}</p>
+                <fieldset x-show="session && !pending" x-cloak>
                   <legend>{{account_transfer_legend}}</legend>
                   <div x-show="transfer" x-cloak>
                     <output class="account-code" x-text="transfer?.code"></output>
@@ -711,7 +722,7 @@
                   </div>
                   <button type="button" x-show="!transfer" :disabled="busy" @click="show_transfer">{{account_transfer_show}}</button>
                 </fieldset>
-                <fieldset x-show="session" x-cloak>
+                <fieldset x-show="session && !pending" x-cloak>
                   <legend>{{account_recovery_legend}}</legend>
                   <p class="account-note">
                     <span x-show="has_recovery" x-cloak>{{account_recovery_set}}</span>
@@ -728,7 +739,7 @@
                     <span x-show="has_recovery" x-cloak>{{account_recovery_replace}}</span>
                   </button>
                 </fieldset>
-                <fieldset>
+                <fieldset x-show="!pending" x-cloak>
                   <legend>{{account_signin_legend}}</legend>
                   <div class="field-row-stacked">
                     <label for="account-code">{{account_signin_label}}</label>
@@ -743,12 +754,12 @@
                       @keydown.enter.prevent="sign_in"
                     />
                   </div>
-                  <p class="account-note" x-show="has_favorites" x-cloak>{{account_signin_merge}}</p>
+                  <p class="account-note" x-show="favorites_count > 0" x-cloak>{{account_signin_merge}}</p>
                   <button type="button" :disabled="busy || code.trim() === ''" @click="sign_in">{{account_signin_button}}</button>
                 </fieldset>
                 <p class="account-message" aria-live="polite" x-show="message" x-cloak :class="{ failed }" x-text="message"></p>
                 <div class="field-row account-actions">
-                  <button type="button" x-show="session" x-cloak :disabled="busy" @click="sign_out">{{account_signout}}</button>
+                  <button type="button" x-show="session && !pending" x-cloak :disabled="busy" @click="sign_out">{{account_signout}}</button>
                   <button type="button" @click="hide">{{close}}</button>
                 </div>
               </div>

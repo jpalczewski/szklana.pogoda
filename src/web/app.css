@@ -388,6 +388,10 @@ body {
   width: 100%;
 }
 
+.account-arrival-actions {
+  justify-content: flex-end;
+}
+
 .account-copy {
   flex-wrap: wrap;
   gap: 0.25rem;
