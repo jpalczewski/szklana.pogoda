@@ -159,6 +159,32 @@ const UpstreamDuration = family.Histogram(
     &family.slow_bounds_ns,
 );
 
+/// What became of the session cookie on a request that carried one, or none.
+/// `invalid` is a value that could not be a token this server issued.
+pub const SessionResult = enum {
+    expired,
+    invalid,
+    missing,
+    unknown,
+    valid,
+};
+
+const SessionLabels = struct {
+    result: SessionResult,
+};
+
+const SessionLookups = family.Counter(
+    "szklana_pogoda_session_lookups_total",
+    "Session cookies read from requests to the account routes, by what became of them.",
+    SessionLabels,
+);
+
+const SessionsCreated = family.Counter(
+    "szklana_pogoda_sessions_created_total",
+    "Anonymous users and sessions created.",
+    no_labels,
+);
+
 const no_labels = struct {};
 
 const ProcessResidentMemory = family.Gauge(
@@ -210,6 +236,8 @@ pub const Registry = struct {
         cache_lookups: CacheLookups,
         upstream_requests: UpstreamRequests,
         upstream_duration: UpstreamDuration,
+        session_lookups: SessionLookups,
+        sessions_created: SessionsCreated,
         process_resident_memory: ProcessResidentMemory,
         process_virtual_memory: ProcessVirtualMemory,
         process_own_memory: ProcessOwnMemory,
@@ -228,6 +256,8 @@ pub const Registry = struct {
             .cache_lookups = .init(allocator),
             .upstream_requests = .init(allocator),
             .upstream_duration = .init(allocator),
+            .session_lookups = .init(allocator),
+            .sessions_created = .init(allocator),
             .process_resident_memory = .init(allocator),
             .process_virtual_memory = .init(allocator),
             .process_own_memory = .init(allocator),
@@ -265,6 +295,14 @@ pub const Registry = struct {
                 self.families.upstream_requests.declare(.{ .upstream = upstream, .result = result });
             }
         }
+    }
+
+    /// The same for the session series, whose labels are all known.
+    pub fn declareSessions(self: *Registry) void {
+        inline for (std.enums.values(SessionResult)) |result| {
+            self.families.session_lookups.declare(.{ .result = result });
+        }
+        self.families.sessions_created.declare(.{});
     }
 
     /// The same for one reason of `headError`, which the listener knows.
@@ -316,6 +354,14 @@ pub const Registry = struct {
     pub fn upstreamRequest(self: *Registry, upstream: Upstream, result: UpstreamResult, took_ns: u64) void {
         self.families.upstream_requests.inc(.{ .upstream = upstream, .result = result });
         self.families.upstream_duration.observe(.{ .upstream = upstream }, took_ns);
+    }
+
+    pub fn sessionLookup(self: *Registry, result: SessionResult) void {
+        self.families.session_lookups.inc(.{ .result = result });
+    }
+
+    pub fn sessionCreated(self: *Registry) void {
+        self.families.sessions_created.inc(.{});
     }
 
     /// The process's memory as the kernel reports it now. Unlike the counters
@@ -496,4 +542,24 @@ test "registry renders the process memory gauges" {
     try std.testing.expect(std.mem.find(u8, rendered, "process_resident_memory_bytes 110\n") != null);
     try std.testing.expect(std.mem.find(u8, rendered, "process_virtual_memory_bytes 300\n") != null);
     try std.testing.expect(std.mem.find(u8, rendered, "szklana_pogoda_process_own_memory_bytes 45\n") != null);
+}
+
+test "session series render at zero once declared and count what happens" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    registry.declareSessions();
+    registry.sessionLookup(.valid);
+    registry.sessionLookup(.valid);
+    registry.sessionCreated();
+
+    const rendered = try registry.renderAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(rendered);
+    for ([_][]const u8{
+        "szklana_pogoda_session_lookups_total{result=\"missing\"} 0\n",
+        "szklana_pogoda_session_lookups_total{result=\"valid\"} 2\n",
+        "szklana_pogoda_sessions_created_total 1\n",
+    }) |expected| {
+        try std.testing.expect(std.mem.find(u8, rendered, expected) != null);
+    }
 }
