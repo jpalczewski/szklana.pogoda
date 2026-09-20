@@ -170,6 +170,7 @@ fn handleConnection(gpa: std.mem.Allocator, io: Io, stream_in: net.Stream, confi
         .query = target_parts.query,
         .headers = headers,
         .body = body_ptr,
+        .client_ip = client_ip,
     };
 
     const response = router.dispatch(config.routes, config.app, &context) catch |err| router.errorResponse(allocator, context.path, err);
@@ -254,6 +255,7 @@ fn writeResponse(request: *http.Server.Request, response: router.Response) !void
         .{ .name = "content-type", .value = response.content_type },
         unused,
         unused,
+        unused,
     };
     var count: usize = 1;
     if (response.allow) |allow| {
@@ -262,6 +264,11 @@ fn writeResponse(request: *http.Server.Request, response: router.Response) !void
     }
     if (response.cache_control) |cache_control| {
         headers[count] = .{ .name = "cache-control", .value = cache_control };
+        count += 1;
+    }
+
+    if (response.set_cookie) |set_cookie| {
+        headers[count] = .{ .name = "set-cookie", .value = set_cookie };
         count += 1;
     }
 

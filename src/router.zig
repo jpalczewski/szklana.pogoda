@@ -1,6 +1,7 @@
 const std = @import("std");
 const http = std.http;
 const Io = std.Io;
+const accounts = @import("accounts/mod.zig");
 const antistorm = @import("antistorm/mod.zig");
 const metrics = @import("metrics/mod.zig");
 const weather = @import("weather/mod.zig");
@@ -13,6 +14,16 @@ pub const App = struct {
     trusted_proxies: trusted_proxies.TrustedProxies = .{},
     metrics: ?*metrics.Registry = null,
     weather_store: ?*weather.Store = null,
+    /// Anonymous users and their sessions; left null by tests that do not
+    /// exercise the account routes.
+    accounts: ?*accounts.Store = null,
+    /// How the session cookie is named and flagged, which follows the scheme the
+    /// site is served over.
+    cookie_policy: accounts.cookie.Policy = .plain,
+    /// The origin the site is served from, such as `https://szklana.pogoda`. A
+    /// request that changes state must name it in `Origin`; without it (local
+    /// development) the request's own `Host` stands in.
+    public_origin: ?[]const u8 = null,
     /// Antistorm readings; left null by tests that do not exercise the storm
     /// routes.
     storm: ?*antistorm.Client = null,
@@ -35,6 +46,11 @@ pub const AppError = std.mem.Allocator.Error || error{
     StormUnavailable,
     /// The storm route was asked for a city that is not in the published table.
     UnknownCity,
+    /// The route needs a session and the request has none.
+    Unauthorized,
+    /// A request that changes state did not come from the site's own pages.
+    Forbidden,
+    AccountsUnavailable,
     /// The Open-Meteo endpoint could not be reached or answered with unusable
     /// data.
     ForecastUnavailable,
@@ -54,6 +70,8 @@ pub const Response = struct {
     /// Sent as `Cache-Control` when set. Without it the response carries no
     /// caching policy, and a CDN in front picks one for the file type.
     cache_control: ?[]const u8 = null,
+    /// Sent as `Set-Cookie` when set: the session cookie being issued or cleared.
+    set_cookie: ?[]const u8 = null,
 
     pub fn html(body: []const u8) Response {
         return .{ .status = .ok, .content_type = "text/html; charset=utf-8", .body = body };
@@ -135,6 +153,9 @@ pub const RequestContext = struct {
     query: ?[]const u8,
     headers: []const Header,
     body: ?*Body,
+    /// The address the request is attributed to (see `server.clientIp`); empty
+    /// where a test does not set it.
+    client_ip: []const u8 = "",
 
     pub fn header(self: *const RequestContext, name: []const u8) ?[]const u8 {
         for (self.headers) |item| {
@@ -190,9 +211,11 @@ pub fn errorResponse(allocator: std.mem.Allocator, path: []const u8, err: AppErr
         error.BadRequest, error.BodyReadFailed => errorFor(allocator, path, .bad_request, .bad_request),
         error.PayloadTooLarge => errorFor(allocator, path, .payload_too_large, .payload_too_large),
         error.UnknownCity => errorFor(allocator, path, .not_found, .city_not_found),
+        error.Unauthorized => errorFor(allocator, path, .unauthorized, .unauthorized),
+        error.Forbidden => errorFor(allocator, path, .forbidden, .forbidden),
         error.StormUnavailable => errorFor(allocator, path, .bad_gateway, .storm_unavailable),
         error.ForecastUnavailable => errorFor(allocator, path, .bad_gateway, .forecast_unavailable),
-        error.MemoryStatisticsUnavailable, error.WeatherStoreUnavailable, error.OutOfMemory => errorFor(allocator, path, .internal_server_error, .internal_server_error),
+        error.MemoryStatisticsUnavailable, error.WeatherStoreUnavailable, error.AccountsUnavailable, error.OutOfMemory => errorFor(allocator, path, .internal_server_error, .internal_server_error),
     };
 }
 
@@ -216,23 +239,27 @@ fn methodNotAllowed(routes: []const Route, request: *RequestContext) Response {
 const ErrorMessage = enum {
     bad_request,
     city_not_found,
+    forbidden,
     forecast_unavailable,
     internal_server_error,
     method_not_allowed,
     not_found,
     payload_too_large,
     storm_unavailable,
+    unauthorized,
 
     fn apiText(self: ErrorMessage) []const u8 {
         return switch (self) {
             .bad_request => "Bad request",
             .city_not_found => "City not found",
+            .forbidden => "Forbidden",
             .forecast_unavailable => "Forecast data unavailable",
             .internal_server_error => "Internal server error",
             .method_not_allowed => "Method not allowed",
             .not_found => "Not found",
             .payload_too_large => "Payload too large",
             .storm_unavailable => "Storm data unavailable",
+            .unauthorized => "Unauthorized",
         };
     }
 
@@ -240,12 +267,14 @@ const ErrorMessage = enum {
         return switch (self) {
             .bad_request => "bad request",
             .city_not_found => "city not found",
+            .forbidden => "forbidden",
             .forecast_unavailable => "forecast data unavailable",
             .internal_server_error => "internal server error",
             .method_not_allowed => "method not allowed",
             .not_found => "not found",
             .payload_too_large => "payload too large",
             .storm_unavailable => "storm data unavailable",
+            .unauthorized => "unauthorized",
         };
     }
 };
@@ -321,6 +350,21 @@ test "router returns JSON errors for API routes" {
 
 fn unreachableHandler(_: *App, _: *RequestContext) AppError!Response {
     unreachable;
+}
+
+test "router maps account failures onto 401, 403 and 500" {
+    const unauthorized = errorResponse(std.testing.allocator, "/api/me/session", error.Unauthorized);
+    defer std.testing.allocator.free(unauthorized.body);
+    try std.testing.expectEqual(http.Status.unauthorized, unauthorized.status);
+    try std.testing.expectEqualStrings("{\"error\":\"Unauthorized\"}", unauthorized.body);
+
+    const forbidden = errorResponse(std.testing.allocator, "/api/me/session", error.Forbidden);
+    defer std.testing.allocator.free(forbidden.body);
+    try std.testing.expectEqual(http.Status.forbidden, forbidden.status);
+
+    const unavailable = errorResponse(std.testing.allocator, "/api/me", error.AccountsUnavailable);
+    defer std.testing.allocator.free(unavailable.body);
+    try std.testing.expectEqual(http.Status.internal_server_error, unavailable.status);
 }
 
 test "router maps storm failures onto 404 and 502" {
