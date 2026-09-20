@@ -833,6 +833,12 @@
     </div>
   </div>
 
+  <script defer src="/arrival.js?v={{version:arrival.js}}"></script>
+  <script defer src="/lib.js?v={{version:lib.js}}"></script>
+  <script defer src="/windows.js?v={{version:windows.js}}"></script>
+  <script defer src="/account.js?v={{version:account.js}}"></script>
+  <script defer src="/imgw.js?v={{version:imgw.js}}"></script>
+  <script defer src="/forecast.js?v={{version:forecast.js}}"></script>
   <script defer src="/app.js?v={{version:app.js}}"></script>
   <script defer src="/qrcode.js?v={{version:qrcode.js}}"></script>
   <script defer src="/alpine.js?v={{version:alpine.js}}"></script>
