@@ -89,7 +89,10 @@ All timestamps are stored in the UTC-suffixed form `YYYY-MM-DDTHH:MM:SSZ`.
 | `GET /api/storm/cities?q=` | the Antistorm city table with ids |
 | `GET /api/storm/city?city=` or `?id=` | one city's newest reading |
 | `GET /api/forecast?lat=&lon=` or `?city=` | Open-Meteo forecast (current + 7-day daily + next 24 hours) for one location |
-| `GET /api/me` | whether the request carries a live session: `{"session": true\|false}`; never a 401 |
+| `GET /api/me` | whether the request carries a live session and whether its account has a login code: `{"session": true\|false, "has_recovery": true\|false}`; never a 401 |
+| `POST /api/me/transfer-code` | a code to sign another browser in with, `{"code": "ABCDE-FGHJK", "expires_in_seconds": 600}`; needs a session, replaces the previous one |
+| `POST /api/me/recovery-code` | a longer login code that signs in again and again, `{"code": "XXXX-XXXX-XXXX-XXXX-XXXX"}`, shown once; needs a session, replaces the previous one |
+| `POST /api/me/login` | `{"code": "..."}` in a JSON body: signs the browser in to the account the code belongs to with a new cookie and joins in the account it held, `{"session": true, "merged": true\|false}`; 401 for a wrong, spent or expired code, 429 past 10 attempts in 10 minutes |
 | `DELETE /api/me/session` | ends the caller's session and clears the cookie; 401 without one |
 | `GET /api/me/favorites` | the caller's favourite cities, `{"favorites": [{city_name, latitude, longitude}]}`; empty without a session, and asking does not create one |
 | `POST /api/me/favorites?city=` | adds a city and answers with the list; the first one from a browser with no session creates it. 404 for a city outside the table, 400 past 50 favourites, 429 when the address made too many accounts |
@@ -174,6 +177,29 @@ is extended at most once an hour. Every `/api/me/*` answer is
 `Cache-Control: private, no-store`, and the rest of the API stays cookie-free
 and cacheable.
 
+### Signing in with a code
+
+There is no e-mail and no password. A browser with an account asks for a
+**transfer code** (10 characters, valid for 10 minutes, one at a time, used once)
+and its person types it into another browser; or makes a **login code** (20
+characters, shown once, valid until replaced) and keeps it for the day every
+browser is lost. Both are typed into one field, and their length says which they
+are. Case, spaces and dashes do not matter, and `I`, `L` and `O` are read as `1`,
+`1` and `0`.
+
+Signing in gives the browser a new session cookie for that account. If the
+browser already held an account of its own, the two are **joined**: their
+favourites are added together (up to 50, oldest first), the other browsers of the
+joined account come along, and a login code it had goes to an account that has
+none. A wrong, spent or expired code is one and the same 401. The database keeps
+only the SHA-256 of a code, and a code is never written to a log, an error or a
+metric. It travels only in a request or response body, never in a URL.
+
+A limit per client address (an IPv6 client by its /64) caps asking for a code (20
+an hour) and trying one (10 in 10 minutes). Anyone who holds the cookie can make
+a new login code and so lock the owner's old one out; a stolen cookie is the
+account.
+
 A request that is not a `GET` or `HEAD` must carry an `Origin` equal to
 `PUBLIC_ORIGIN` (or, with none configured, to its own `Host`), else it is a 403.
 A favourite is stored under the spelling of the city table (`gorzow+wielkopolski`
@@ -205,6 +231,7 @@ visitors and not probes.
 | `szklana_pogoda_upstream_request_duration_seconds` | `upstream` | histogram of those downloads |
 | `szklana_pogoda_session_lookups_total` | `result` | session cookies read by the account routes: `valid`, `missing`, `invalid` (not a token this server issued), `unknown` or `expired` |
 | `szklana_pogoda_sessions_created_total` | | anonymous users and sessions created |
+| `szklana_pogoda_login_attempts_total` | `kind`, `result` | attempts to sign in with a code: `kind` is `transfer`, `recovery` or `unknown` (refused before the code was read), `result` is `succeeded`, `invalid` or `limited` |
 | `process_resident_memory_bytes`, `process_virtual_memory_bytes`, `szklana_pogoda_process_own_memory_bytes` | | the figures `/api/memory` reports, read at scrape time |
 
 `source` is the product label of the updater's source table: `synop`, `meteo`,

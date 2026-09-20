@@ -1,12 +1,14 @@
 //! Accounts: anonymous users and the sessions that identify a browser as one.
 //!
 //! `store.zig` owns the SQLite file and its schema, `token.zig` what the cookie
-//! carries and what the database keeps of it, `cookie.zig` how that travels in
-//! HTTP headers and `limiter.zig` how often one address may make an account.
-//! The routes that use them live in `routes/account.zig`, so this module knows
-//! nothing about the router.
+//! carries and what the database keeps of it, `code.zig` the sign-in codes a
+//! person types, `cookie.zig` how the session travels in HTTP headers and
+//! `limiter.zig` how often one address may make an account. The routes that use
+//! them live in `routes/account.zig`, so this module knows nothing about the
+//! router.
 
 pub const token = @import("token.zig");
+pub const code = @import("code.zig");
 pub const cookie = @import("cookie.zig");
 pub const limiter = @import("limiter.zig");
 pub const store = @import("store.zig");

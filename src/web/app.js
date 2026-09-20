@@ -16,6 +16,213 @@ document.addEventListener("alpine:init", () => {
     };
   });
 
+  /* The account dialog. A browser has an account only once it has saved
+   * something; this is where that account is carried to another browser (a
+   * transfer code), made recoverable (a login code) or entered with a code. A
+   * code is a secret: it is shown here and nowhere else, and it is dropped when
+   * the dialog closes. */
+  Alpine.data("account", () => {
+    const base = modal();
+    return {
+      ...base,
+      session: false,
+      has_recovery: false,
+      /* Whether this browser holds favourites that signing in would join to the
+       * account it signs in to, which is worth saying before it happens. */
+      has_favorites: false,
+      /* `{ code, until }` with `until` in milliseconds. */
+      transfer: null,
+      recovery: "",
+      remaining: 0,
+      timer: null,
+      code: "",
+      busy: false,
+      message: "",
+      failed: false,
+      clipboard: Boolean(navigator.clipboard?.writeText),
+
+      show() {
+        base.show.call(this);
+        this.message = "";
+        this.load();
+      },
+
+      hide() {
+        if (!this.open) return;
+        base.hide.call(this);
+        this.forget();
+      },
+
+      /* What is on screen only while the dialog is open. */
+      forget() {
+        this.transfer = null;
+        this.recovery = "";
+        this.code = "";
+        this.stop_timer();
+      },
+
+      async load() {
+        try {
+          const [me, favorites] = await Promise.all([fetch("/api/me"), fetch("/api/me/favorites")]);
+          if (!me.ok || !favorites.ok) throw new Error(`HTTP ${me.status}/${favorites.status}`);
+          const status = await me.json();
+          this.session = status.session;
+          this.has_recovery = status.has_recovery;
+          this.has_favorites = (await favorites.json()).favorites.length > 0;
+        } catch (err) {
+          console.error("account request failed", err);
+          this.tell(document.body.dataset.accountUnavailable, true);
+        }
+      },
+
+      tell(text, failed = false) {
+        this.message = text;
+        this.failed = failed;
+      },
+
+      /* Sends a request that changes state. The body, when there is one, is JSON:
+       * the server refuses anything else. A code is only ever sent this way and
+       * never in an address. */
+      async send(method, path, body) {
+        const options = { method };
+        if (body !== undefined) {
+          options.headers = { "Content-Type": "application/json" };
+          options.body = JSON.stringify(body);
+        }
+        const response = await fetch(path, options);
+        return { ok: response.ok, status: response.status, data: response.ok ? await response.json() : null };
+      },
+
+      failure(status) {
+        const strings = document.body.dataset;
+        if (status === 401) return strings.accountInvalid;
+        if (status === 429) return strings.accountLimited;
+        return strings.accountUnavailable;
+      },
+
+      async show_transfer() {
+        if (this.busy) return;
+        this.busy = true;
+        this.message = "";
+        try {
+          const result = await this.send("POST", "/api/me/transfer-code");
+          if (!result.ok) {
+            this.tell(this.failure(result.status), true);
+            return;
+          }
+          this.transfer = { code: result.data.code, until: Date.now() + result.data.expires_in_seconds * 1000 };
+          this.start_timer();
+        } catch (err) {
+          console.error("transfer code request failed", err);
+          this.tell(document.body.dataset.accountUnavailable, true);
+        } finally {
+          this.busy = false;
+        }
+      },
+
+      start_timer() {
+        this.stop_timer();
+        this.tick();
+        this.timer = setInterval(() => this.tick(), 1000);
+      },
+
+      stop_timer() {
+        if (this.timer !== null) clearInterval(this.timer);
+        this.timer = null;
+      },
+
+      /* A code that has run out is taken off the screen, since it no longer works. */
+      tick() {
+        this.remaining = Math.max(0, Math.ceil(((this.transfer?.until ?? 0) - Date.now()) / 1000));
+        if (this.remaining === 0) {
+          this.transfer = null;
+          this.stop_timer();
+        }
+      },
+
+      get remaining_text() {
+        const minutes = Math.floor(this.remaining / 60);
+        const seconds = String(this.remaining % 60).padStart(2, "0");
+        return `${minutes}:${seconds}`;
+      },
+
+      async make_recovery() {
+        if (this.busy) return;
+        this.busy = true;
+        this.message = "";
+        try {
+          const result = await this.send("POST", "/api/me/recovery-code");
+          if (!result.ok) {
+            this.tell(this.failure(result.status), true);
+            return;
+          }
+          this.recovery = result.data.code;
+          this.has_recovery = true;
+        } catch (err) {
+          console.error("login code request failed", err);
+          this.tell(document.body.dataset.accountUnavailable, true);
+        } finally {
+          this.busy = false;
+        }
+      },
+
+      async sign_in() {
+        const code = this.code.trim();
+        if (this.busy || code === "") return;
+        this.busy = true;
+        this.message = "";
+        try {
+          const result = await this.send("POST", "/api/me/login", { code });
+          if (!result.ok) {
+            this.tell(this.failure(result.status), true);
+            return;
+          }
+          const strings = document.body.dataset;
+          this.forget();
+          await this.load();
+          this.tell(result.data.merged ? strings.accountSigninDoneMerged : strings.accountSigninDone);
+          window.dispatchEvent(new CustomEvent("account-changed"));
+        } catch (err) {
+          console.error("sign-in request failed", err);
+          this.tell(document.body.dataset.accountUnavailable, true);
+        } finally {
+          this.busy = false;
+        }
+      },
+
+      async sign_out() {
+        if (this.busy) return;
+        this.busy = true;
+        this.message = "";
+        try {
+          const result = await this.send("DELETE", "/api/me/session");
+          if (!result.ok) {
+            this.tell(this.failure(result.status), true);
+            return;
+          }
+          this.forget();
+          await this.load();
+          window.dispatchEvent(new CustomEvent("account-changed"));
+        } catch (err) {
+          console.error("sign-out request failed", err);
+          this.tell(document.body.dataset.accountUnavailable, true);
+        } finally {
+          this.busy = false;
+        }
+      },
+
+      /* A convenience: a code that cannot be copied is still on screen to read. */
+      async copy(text) {
+        try {
+          await navigator.clipboard.writeText(text);
+          this.tell(document.body.dataset.accountCopied);
+        } catch {
+          /* Clipboard access can be refused; the code stays visible. */
+        }
+      },
+    };
+  });
+
   Alpine.data("imgw", () => {
     const base = modal();
     return {

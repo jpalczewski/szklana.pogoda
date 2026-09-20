@@ -64,11 +64,18 @@ pub fn ensure(comptime handler: SessionHandler) router.Handler {
     }.handle;
 }
 
-/// Says whether the request comes with a session: `{"session": true}`.
+/// Says whether the request comes with a session and whether its account has a
+/// recovery code: `{"session": true, "has_recovery": false}`.
 pub const sessionStatus = optional(sessionStatusHandler);
 
-fn sessionStatusHandler(_: *router.App, request: *router.RequestContext, session: ?Session) router.AppError!router.Response {
-    return router.Response.jsonValue(request.allocator, .ok, .{ .session = session != null });
+fn sessionStatusHandler(app: *router.App, request: *router.RequestContext, session: ?Session) router.AppError!router.Response {
+    const caller = session orelse return router.Response.jsonValue(request.allocator, .ok, .{ .session = false, .has_recovery = false });
+    const store = app.accounts orelse return error.AccountsUnavailable;
+    const has_recovery = store.hasRecovery(caller.user_id) catch |err| {
+        std.log.err("reading whether the account has a recovery code failed: {t}", .{err});
+        return error.AccountsUnavailable;
+    };
+    return router.Response.jsonValue(request.allocator, .ok, .{ .session = true, .has_recovery = has_recovery });
 }
 
 /// Ends the caller's session and tells the browser to drop the cookie. The
@@ -90,6 +97,16 @@ fn private(response: router.Response) router.Response {
     var marked = response;
     if (marked.cache_control == null) marked.cache_control = private_cache;
     return marked;
+}
+
+/// Refuses a request whose body is not declared JSON. A page on another site can
+/// make a browser send a form or plain text to us, but not `application/json`
+/// without a preflight the server never answers, so this is a second line behind
+/// the `Origin` check for the routes that read a body.
+pub fn requireJson(request: *const router.RequestContext) router.AppError!void {
+    const declared = request.header("content-type") orelse return error.BadRequest;
+    const media_type = std.mem.trim(u8, declared[0 .. std.mem.findScalar(u8, declared, ';') orelse declared.len], " \t");
+    if (!std.ascii.eqlIgnoreCase(media_type, "application/json")) return error.BadRequest;
 }
 
 /// Refuses a request that changes state unless it names the site as its origin.
@@ -179,70 +196,32 @@ fn recordLookup(app: *router.App, result: metrics.SessionResult) void {
     if (app.metrics) |registry| registry.sessionLookup(result);
 }
 
-fn nowSeconds(io: Io) i64 {
+pub fn nowSeconds(io: Io) i64 {
     return Io.Clock.real.now(io).toSeconds();
-}
-
-const TestSite = struct {
-    store: accounts.Store,
-    arena: std.heap.ArenaAllocator,
-    app: router.App,
-
-    fn init() !*TestSite {
-        const site = try std.testing.allocator.create(TestSite);
-        site.* = .{
-            .store = try accounts.Store.initMemory(),
-            .arena = .init(std.testing.allocator),
-            .app = .{ .max_body_bytes = 16, .io = std.testing.io },
-        };
-        site.app.accounts = &site.store;
-        return site;
-    }
-
-    fn destroy(self: *TestSite) void {
-        self.arena.deinit();
-        self.store.deinit();
-        std.testing.allocator.destroy(self);
-    }
-
-    fn call(self: *TestSite, handler: router.Handler, method: std.http.Method, headers: []const router.Header) router.AppError!router.Response {
-        var request: router.RequestContext = .{
-            .allocator = self.arena.allocator(),
-            .method = method,
-            .path = "/api/me",
-            .query = null,
-            .headers = headers,
-            .body = null,
-        };
-        return handler(&self.app, &request);
-    }
-};
-
-/// The token a `Set-Cookie` value carries, which the next request sends back.
-fn tokenOf(set_cookie: []const u8) []const u8 {
-    const start = std.mem.findScalar(u8, set_cookie, '=').? + 1;
-    return set_cookie[start..][0..accounts.token.text_len];
 }
 
 fn echoUser(_: *router.App, request: *router.RequestContext, session: Session) router.AppError!router.Response {
     return router.Response.jsonValue(request.allocator, .ok, .{ .user = session.user_id });
 }
 
-const same_site: router.Header = .{ .name = "Origin", .value = "http://localhost:8080" };
-const local_host: router.Header = .{ .name = "Host", .value = "localhost:8080" };
+const testing_site = @import("account_testing.zig");
+const Site = testing_site.Site;
+const same_site = testing_site.same_site;
+const local_host = testing_site.local_host;
+const tokenOf = testing_site.tokenOf;
 
 test "a request without a cookie has no session and the answer is not cacheable" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
 
     const response = try site.call(sessionStatus, .GET, &.{});
-    try std.testing.expectEqualStrings("{\"session\":false}", response.body);
+    try std.testing.expectEqualStrings("{\"session\":false,\"has_recovery\":false}", response.body);
     try std.testing.expectEqualStrings("private, no-store", response.cache_control.?);
     try std.testing.expect(response.set_cookie == null);
 }
 
 test "ensure makes a user on the first request and recognises the browser after" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     const keep = ensure(echoUser);
 
@@ -258,11 +237,11 @@ test "ensure makes a user on the first request and recognises the browser after"
     const second = try site.call(keep, .POST, &.{ same_site, local_host, returning });
     try std.testing.expect(second.set_cookie == null);
     try std.testing.expectEqualStrings("{\"user\":1}", second.body);
-    try std.testing.expectEqualStrings("{\"session\":true}", (try site.call(sessionStatus, .GET, &.{returning})).body);
+    try std.testing.expectEqualStrings("{\"session\":true,\"has_recovery\":false}", (try site.call(sessionStatus, .GET, &.{returning})).body);
 }
 
 test "require answers 401 without a session and runs the handler with one" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     try std.testing.expectError(error.Unauthorized, site.call(require(echoUser), .GET, &.{}));
 
@@ -274,15 +253,15 @@ test "require answers 401 without a session and runs the handler with one" {
 }
 
 test "a cookie that is not a token, or that nobody issued, is no session" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
-    try std.testing.expectEqualStrings("{\"session\":false}", (try site.call(sessionStatus, .GET, &.{.{ .name = "Cookie", .value = "sid=garbage" }})).body);
+    try std.testing.expectEqualStrings("{\"session\":false,\"has_recovery\":false}", (try site.call(sessionStatus, .GET, &.{.{ .name = "Cookie", .value = "sid=garbage" }})).body);
     const forged = "sid=" ++ "A" ** accounts.token.text_len;
-    try std.testing.expectEqualStrings("{\"session\":false}", (try site.call(sessionStatus, .GET, &.{.{ .name = "Cookie", .value = forged }})).body);
+    try std.testing.expectEqualStrings("{\"session\":false,\"has_recovery\":false}", (try site.call(sessionStatus, .GET, &.{.{ .name = "Cookie", .value = forged }})).body);
 }
 
 test "a request that changes state must come from the site's own origin" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     const keep = ensure(echoUser);
 
@@ -293,7 +272,7 @@ test "a request that changes state must come from the site's own origin" {
 }
 
 test "with a configured origin only that origin is accepted" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     site.app.public_origin = "https://szklana.pogoda";
     site.app.cookie_policy = .secure;
@@ -307,7 +286,7 @@ test "with a configured origin only that origin is accepted" {
 }
 
 test "signing out ends the session, clears the cookie and needs the site's origin" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
     const created = try site.call(ensure(echoUser), .POST, &.{ same_site, local_host });
     var cookie_header_buffer: [64]u8 = undefined;
@@ -315,18 +294,18 @@ test "signing out ends the session, clears the cookie and needs the site's origi
     const returning: router.Header = .{ .name = "Cookie", .value = cookie_header };
 
     try std.testing.expectError(error.Forbidden, site.call(signOut, .DELETE, &.{returning}));
-    try std.testing.expectEqualStrings("{\"session\":true}", (try site.call(sessionStatus, .GET, &.{returning})).body);
+    try std.testing.expectEqualStrings("{\"session\":true,\"has_recovery\":false}", (try site.call(sessionStatus, .GET, &.{returning})).body);
 
     const response = try site.call(signOut, .DELETE, &.{ same_site, local_host, returning });
     try std.testing.expect(std.mem.find(u8, response.set_cookie.?, "Max-Age=0") != null);
-    try std.testing.expectEqualStrings("{\"session\":false}", (try site.call(sessionStatus, .GET, &.{returning})).body);
+    try std.testing.expectEqualStrings("{\"session\":false,\"has_recovery\":false}", (try site.call(sessionStatus, .GET, &.{returning})).body);
     try std.testing.expectError(error.Unauthorized, site.call(signOut, .DELETE, &.{ same_site, local_host, returning }));
 }
 
 test "one address may make only so many accounts, and known browsers do not count" {
-    const site = try TestSite.init();
+    const site = try Site.create();
     defer site.destroy();
-    var limiter: accounts.Limiter = .init(std.testing.allocator, 2, 3600);
+    var limiter: accounts.Limiter = .init(std.testing.allocator, 2, 3600, .allow);
     defer limiter.deinit();
     site.app.new_session_limiter = &limiter;
     const keep = ensure(echoUser);
@@ -354,6 +333,24 @@ test "one address may make only so many accounts, and known browsers do not coun
     first_request.headers = &.{ same_site, local_host };
     first_request.client_ip = "203.0.113.5";
     _ = try keep(&site.app, &first_request);
+}
+
+test "a body must be declared as JSON" {
+    var request: router.RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .POST,
+        .path = "/api/me/login",
+        .query = null,
+        .headers = &.{.{ .name = "Content-Type", .value = "Application/JSON; charset=utf-8" }},
+        .body = null,
+    };
+    try requireJson(&request);
+    for ([_][]const u8{ "text/plain", "application/x-www-form-urlencoded", "application/jsonx", "" }) |declared| {
+        request.headers = &.{.{ .name = "Content-Type", .value = declared }};
+        try std.testing.expectError(error.BadRequest, requireJson(&request));
+    }
+    request.headers = &.{};
+    try std.testing.expectError(error.BadRequest, requireJson(&request));
 }
 
 test "the account routes need the accounts store" {

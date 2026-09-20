@@ -5,15 +5,27 @@
 //! fixed window, and it lives in memory: the process is a single one, and losing
 //! the counts on a restart only lets a client start a new window early.
 //!
-//! The table is bounded. When it is full of live windows, an address it cannot
-//! track is let through rather than refused, because refusing is what an
-//! attacker with many addresses would use against everyone else.
+//! The table is bounded. When it is full of live windows, what happens to an
+//! address it cannot track is the caller's choice. Making an account lets it
+//! through, because refusing is what an attacker with many addresses would use
+//! against everyone else. Guessing a code refuses it, because a table that fills
+//! up must not be a way past the limit.
+//!
+//! An IPv6 client is counted by its /64, the smallest block a network hands out,
+//! so one machine cannot turn its block into as many addresses as it likes.
 
 const std = @import("std");
 const Io = std.Io;
+const net = Io.net;
 
 /// The most addresses tracked at once.
 const max_entries = 8192;
+
+/// What to do with an address the table has no room to track.
+pub const OnFull = enum {
+    allow,
+    refuse,
+};
 
 const Window = struct {
     started_at: i64,
@@ -25,12 +37,13 @@ pub const Limiter = struct {
     /// How many times one address may pass per window.
     limit: u32,
     window_seconds: i64,
+    on_full: OnFull,
     mutex: Io.Mutex = .init,
     /// Keyed by a hash of the address, so no address text is kept.
     windows: std.AutoHashMapUnmanaged(u64, Window) = .empty,
 
-    pub fn init(allocator: std.mem.Allocator, limit: u32, window_seconds: i64) Limiter {
-        return .{ .allocator = allocator, .limit = limit, .window_seconds = window_seconds };
+    pub fn init(allocator: std.mem.Allocator, limit: u32, window_seconds: i64, on_full: OnFull) Limiter {
+        return .{ .allocator = allocator, .limit = limit, .window_seconds = window_seconds, .on_full = on_full };
     }
 
     pub fn deinit(self: *Limiter) void {
@@ -43,7 +56,7 @@ pub const Limiter = struct {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
 
-        const key = std.hash.Wyhash.hash(0, address);
+        const key = keyFor(address);
         if (self.windows.getPtr(key)) |window| {
             if (now - window.started_at >= self.window_seconds) {
                 window.* = .{ .started_at = now, .count = 1 };
@@ -55,8 +68,8 @@ pub const Limiter = struct {
         }
 
         if (self.windows.count() >= max_entries) self.dropExpired(now);
-        if (self.windows.count() >= max_entries) return true;
-        self.windows.put(self.allocator, key, .{ .started_at = now, .count = 1 }) catch return true;
+        if (self.windows.count() >= max_entries) return self.on_full == .allow;
+        self.windows.put(self.allocator, key, .{ .started_at = now, .count = 1 }) catch return self.on_full == .allow;
         return true;
     }
 
@@ -72,8 +85,24 @@ pub const Limiter = struct {
     }
 };
 
+/// What an address is counted as: an IPv4 address by itself, an IPv6 one by its
+/// /64. An IPv4 address a dual-stack listener reports in IPv6 form
+/// (`::ffff:a.b.c.d`) is counted as the IPv4 address it is. Text that is not an
+/// address is counted as text.
+fn keyFor(address: []const u8) u64 {
+    const parsed = net.IpAddress.parse(address, 0) catch return std.hash.Wyhash.hash(0, address);
+    switch (parsed) {
+        .ip4 => |ip4| return std.hash.Wyhash.hash(4, &ip4.bytes),
+        .ip6 => |ip6| {
+            const mapped_prefix = [_]u8{0} ** 10 ++ [_]u8{ 0xff, 0xff };
+            if (std.mem.eql(u8, ip6.bytes[0..12], &mapped_prefix)) return std.hash.Wyhash.hash(4, ip6.bytes[12..16]);
+            return std.hash.Wyhash.hash(6, ip6.bytes[0..8]);
+        },
+    }
+}
+
 test "an address passes up to the limit and is refused after" {
-    var limiter: Limiter = .init(std.testing.allocator, 3, 3600);
+    var limiter: Limiter = .init(std.testing.allocator, 3, 3600, .allow);
     defer limiter.deinit();
     for (0..3) |_| try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 100));
     try std.testing.expect(!limiter.allow(std.testing.io, "203.0.113.4", 101));
@@ -81,7 +110,7 @@ test "an address passes up to the limit and is refused after" {
 }
 
 test "the count starts over when the window has passed" {
-    var limiter: Limiter = .init(std.testing.allocator, 1, 3600);
+    var limiter: Limiter = .init(std.testing.allocator, 1, 3600, .allow);
     defer limiter.deinit();
     try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 0));
     try std.testing.expect(!limiter.allow(std.testing.io, "203.0.113.4", 3599));
@@ -89,7 +118,7 @@ test "the count starts over when the window has passed" {
 }
 
 test "addresses are counted apart" {
-    var limiter: Limiter = .init(std.testing.allocator, 1, 3600);
+    var limiter: Limiter = .init(std.testing.allocator, 1, 3600, .allow);
     defer limiter.deinit();
     try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 0));
     try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.5", 0));
@@ -97,7 +126,7 @@ test "addresses are counted apart" {
 }
 
 test "a full table drops expired windows and otherwise lets a new address through" {
-    var limiter: Limiter = .init(std.testing.allocator, 1, 3600);
+    var limiter: Limiter = .init(std.testing.allocator, 1, 3600, .allow);
     defer limiter.deinit();
     for (0..max_entries) |index| try limiter.windows.put(std.testing.allocator, index, .{ .started_at = 0, .count = 1 });
 
@@ -109,4 +138,39 @@ test "a full table drops expired windows and otherwise lets a new address throug
     try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 4000));
     try std.testing.expectEqual(@as(u32, 1), limiter.windows.count());
     try std.testing.expect(!limiter.allow(std.testing.io, "203.0.113.4", 4001));
+}
+
+test "a full table refuses a new address when the limiter is told to" {
+    var limiter: Limiter = .init(std.testing.allocator, 1, 3600, .refuse);
+    defer limiter.deinit();
+    for (0..max_entries) |index| try limiter.windows.put(std.testing.allocator, index, .{ .started_at = 0, .count = 1 });
+
+    try std.testing.expect(!limiter.allow(std.testing.io, "203.0.113.4", 10));
+    // Room made by expired windows lets it in again.
+    try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 4000));
+}
+
+test "an IPv6 client is counted by its /64" {
+    var limiter: Limiter = .init(std.testing.allocator, 1, 3600, .allow);
+    defer limiter.deinit();
+    try std.testing.expect(limiter.allow(std.testing.io, "2001:db8:1:2::1", 0));
+    try std.testing.expect(!limiter.allow(std.testing.io, "2001:db8:1:2:ffff:ffff:ffff:ffff", 1));
+    try std.testing.expect(limiter.allow(std.testing.io, "2001:db8:1:3::1", 1));
+}
+
+test "an IPv4 address in IPv6 form is the same client as in IPv4 form" {
+    var limiter: Limiter = .init(std.testing.allocator, 1, 3600, .allow);
+    defer limiter.deinit();
+    try std.testing.expect(limiter.allow(std.testing.io, "203.0.113.4", 0));
+    try std.testing.expect(!limiter.allow(std.testing.io, "::ffff:203.0.113.4", 1));
+    // Two mapped clients are two clients, not one /64.
+    try std.testing.expect(limiter.allow(std.testing.io, "::ffff:203.0.113.5", 1));
+}
+
+test "text that is not an address is counted as itself" {
+    var limiter: Limiter = .init(std.testing.allocator, 1, 3600, .allow);
+    defer limiter.deinit();
+    try std.testing.expect(limiter.allow(std.testing.io, "", 0));
+    try std.testing.expect(!limiter.allow(std.testing.io, "", 1));
+    try std.testing.expect(limiter.allow(std.testing.io, "unknown", 1));
 }

@@ -31,6 +31,12 @@
   data-favorite-remove="{{favorite_remove}}"
   data-favorites-unavailable="{{favorites_unavailable}}"
   data-favorites-full="{{favorites_full}}"
+  data-account-invalid="{{account_invalid}}"
+  data-account-limited="{{account_limited}}"
+  data-account-unavailable="{{account_unavailable}}"
+  data-account-signin-done="{{account_signin_done}}"
+  data-account-signin-done-merged="{{account_signin_done_merged}}"
+  data-account-copied="{{account_copied}}"
   data-wmo-clear="{{wmo_clear}}"
   data-wmo-partly="{{wmo_partly}}"
   data-wmo-cloudy="{{wmo_cloudy}}"
@@ -68,7 +74,7 @@
     </div>
     <div class="window-body">
       <p class="language-switcher"><a href="/" lang="pl">PL</a> | <a href="/en/" lang="en">EN</a></p>
-      <fieldset class="forecast-panel" x-data="forecast">
+      <fieldset class="forecast-panel" x-data="forecast" @account-changed.window="load_favorites">
         <legend>{{forecast_legend}}</legend>
         <div class="forecast-combo" x-ref="combo" @focusout="leave">
           <label for="forecast-input">{{forecast_label}}</label>
@@ -644,7 +650,101 @@
           </div>
         </div>
       </div>
-      <div class="about-panel" x-data="about" @keydown.escape.window="hide">
+      <div class="launcher-row">
+        <div class="account-panel" x-data="account" @keydown.escape.window="hide">
+          <button
+            type="button"
+            x-ref="launcher"
+            aria-haspopup="dialog"
+            :aria-expanded="open ? 'true' : 'false'"
+            @click="show"
+          >{{account_button}}</button>
+          <div
+            class="modal-backdrop"
+            x-show="open"
+            x-cloak
+            @pointerdown.self="press_backdrop"
+            @pointerup.self="release_backdrop"
+            @pointerup.window="pressed_backdrop = false"
+          >
+            <div
+              class="window account-window"
+              x-ref="dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="account-title"
+              :style="`transform: translate(${offset.x}px, ${offset.y}px)`"
+              @pointerdown="pressed_backdrop = false"
+            >
+              <div
+                class="title-bar"
+                @pointerdown="start_drag"
+                @pointermove="move_drag"
+                @pointerup="end_drag"
+                @pointercancel="end_drag"
+              >
+                <div class="title-bar-text" id="account-title">{{account_title}}</div>
+                <div class="title-bar-controls">
+                  <button type="button" class="close" x-ref="closeButton" aria-label="{{close}}" @click="hide"></button>
+                </div>
+              </div>
+              <div class="window-body">
+                <p class="account-intro">{{account_intro}}</p>
+                <p class="account-intro" x-show="!session" x-cloak>{{account_none}}</p>
+                <fieldset x-show="session" x-cloak>
+                  <legend>{{account_transfer_legend}}</legend>
+                  <div x-show="transfer" x-cloak>
+                    <output class="account-code" x-text="transfer?.code"></output>
+                    <p class="account-note">{{account_transfer_note}} {{account_transfer_left}}: <span x-text="remaining_text"></span></p>
+                    <button type="button" x-show="clipboard" x-cloak @click="copy(transfer.code)">{{account_copy}}</button>
+                  </div>
+                  <button type="button" x-show="!transfer" :disabled="busy" @click="show_transfer">{{account_transfer_show}}</button>
+                </fieldset>
+                <fieldset x-show="session" x-cloak>
+                  <legend>{{account_recovery_legend}}</legend>
+                  <p class="account-note">
+                    <span x-show="has_recovery" x-cloak>{{account_recovery_set}}</span>
+                    <span x-show="!has_recovery" x-cloak>{{account_recovery_unset}}</span>
+                    {{account_recovery_note}}
+                  </p>
+                  <div x-show="recovery" x-cloak>
+                    <output class="account-code" x-text="recovery"></output>
+                    <p class="account-note account-warning">{{account_recovery_once}}</p>
+                    <button type="button" x-show="clipboard" x-cloak @click="copy(recovery)">{{account_copy}}</button>
+                  </div>
+                  <button type="button" :disabled="busy" @click="make_recovery">
+                    <span x-show="!has_recovery" x-cloak>{{account_recovery_make}}</span>
+                    <span x-show="has_recovery" x-cloak>{{account_recovery_replace}}</span>
+                  </button>
+                </fieldset>
+                <fieldset>
+                  <legend>{{account_signin_legend}}</legend>
+                  <div class="field-row-stacked">
+                    <label for="account-code">{{account_signin_label}}</label>
+                    <input
+                      id="account-code"
+                      type="text"
+                      autocomplete="off"
+                      autocapitalize="characters"
+                      spellcheck="false"
+                      maxlength="40"
+                      x-model="code"
+                      @keydown.enter.prevent="sign_in"
+                    />
+                  </div>
+                  <p class="account-note" x-show="has_favorites" x-cloak>{{account_signin_merge}}</p>
+                  <button type="button" :disabled="busy || code.trim() === ''" @click="sign_in">{{account_signin_button}}</button>
+                </fieldset>
+                <p class="account-message" aria-live="polite" x-show="message" x-cloak :class="{ failed }" x-text="message"></p>
+                <div class="field-row account-actions">
+                  <button type="button" x-show="session" x-cloak :disabled="busy" @click="sign_out">{{account_signout}}</button>
+                  <button type="button" @click="hide">{{close}}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="about-panel" x-data="about" @keydown.escape.window="hide">
         <button
           type="button"
           x-ref="launcher"
@@ -705,6 +805,7 @@
               </div>
             </div>
           </div>
+        </div>
         </div>
       </div>
     </div>

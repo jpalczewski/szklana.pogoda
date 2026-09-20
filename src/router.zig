@@ -19,6 +19,10 @@ pub const App = struct {
     accounts: ?*accounts.Store = null,
     /// Caps how often one address may make an account; null (tests) is no cap.
     new_session_limiter: ?*accounts.Limiter = null,
+    /// Caps how often one address may ask for a sign-in code; null is no cap.
+    code_limiter: ?*accounts.Limiter = null,
+    /// Caps how often one address may try a sign-in code; null is no cap.
+    login_limiter: ?*accounts.Limiter = null,
     /// How the session cookie is named and flagged, which follows the scheme the
     /// site is served over.
     cookie_policy: accounts.cookie.Policy = .plain,
@@ -54,6 +58,9 @@ pub const AppError = std.mem.Allocator.Error || error{
     Forbidden,
     /// One address asked for more than the route allows in its window.
     TooManyRequests,
+    /// A sign-in code that is malformed, unknown, spent or out of time. The
+    /// answer does not say which.
+    InvalidCode,
     AccountsUnavailable,
     /// The Open-Meteo endpoint could not be reached or answered with unusable
     /// data.
@@ -229,6 +236,7 @@ pub fn errorResponse(allocator: std.mem.Allocator, path: []const u8, err: AppErr
         error.UnknownCity => errorFor(allocator, path, .not_found, .city_not_found),
         error.Unauthorized => errorFor(allocator, path, .unauthorized, .unauthorized),
         error.Forbidden => errorFor(allocator, path, .forbidden, .forbidden),
+        error.InvalidCode => errorFor(allocator, path, .unauthorized, .invalid_code),
         error.TooManyRequests => errorFor(allocator, path, .too_many_requests, .too_many_requests),
         error.StormUnavailable => errorFor(allocator, path, .bad_gateway, .storm_unavailable),
         error.ForecastUnavailable => errorFor(allocator, path, .bad_gateway, .forecast_unavailable),
@@ -259,6 +267,7 @@ const ErrorMessage = enum {
     forbidden,
     forecast_unavailable,
     internal_server_error,
+    invalid_code,
     method_not_allowed,
     not_found,
     payload_too_large,
@@ -273,6 +282,7 @@ const ErrorMessage = enum {
             .forbidden => "Forbidden",
             .forecast_unavailable => "Forecast data unavailable",
             .internal_server_error => "Internal server error",
+            .invalid_code => "Invalid or expired code",
             .method_not_allowed => "Method not allowed",
             .not_found => "Not found",
             .payload_too_large => "Payload too large",
@@ -289,6 +299,7 @@ const ErrorMessage = enum {
             .forbidden => "forbidden",
             .forecast_unavailable => "forecast data unavailable",
             .internal_server_error => "internal server error",
+            .invalid_code => "invalid or expired code",
             .method_not_allowed => "method not allowed",
             .not_found => "not found",
             .payload_too_large => "payload too large",
@@ -381,6 +392,11 @@ test "router maps account failures onto 401, 403 and 500" {
     const forbidden = errorResponse(std.testing.allocator, "/api/me/session", error.Forbidden);
     defer std.testing.allocator.free(forbidden.body);
     try std.testing.expectEqual(http.Status.forbidden, forbidden.status);
+
+    const bad_code = errorResponse(std.testing.allocator, "/api/me/login", error.InvalidCode);
+    defer std.testing.allocator.free(bad_code.body);
+    try std.testing.expectEqual(http.Status.unauthorized, bad_code.status);
+    try std.testing.expectEqualStrings("{\"error\":\"Invalid or expired code\"}", bad_code.body);
 
     const limited = errorResponse(std.testing.allocator, "/api/me/favorites", error.TooManyRequests);
     defer std.testing.allocator.free(limited.body);
