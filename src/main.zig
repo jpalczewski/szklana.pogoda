@@ -229,7 +229,7 @@ pub fn main(init: std.process.Init) !void {
     defer observations.deinit();
     var account_store = try accounts.Store.initFile(accounts_database_path);
     defer account_store.deinit();
-    var new_session_limiter: accounts.Limiter = .init(gpa, config.new_sessions_per_hour, std.time.s_per_hour);
+    var new_session_limiter: accounts.Limiter = .init(gpa, config.new_sessions_per_hour, std.time.s_per_hour, .allow);
     defer new_session_limiter.deinit();
     if (config.public_origin == null) {
         std.log.warn("PUBLIC_ORIGIN is not set: session cookies are not Secure and the Origin of a state-changing request is compared with its Host", .{});

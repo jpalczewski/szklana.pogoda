@@ -326,7 +326,7 @@ test "signing out ends the session, clears the cookie and needs the site's origi
 test "one address may make only so many accounts, and known browsers do not count" {
     const site = try TestSite.init();
     defer site.destroy();
-    var limiter: accounts.Limiter = .init(std.testing.allocator, 2, 3600);
+    var limiter: accounts.Limiter = .init(std.testing.allocator, 2, 3600, .allow);
     defer limiter.deinit();
     site.app.new_session_limiter = &limiter;
     const keep = ensure(echoUser);
