@@ -244,8 +244,9 @@ A request that is not a `GET` or `HEAD` must carry an `Origin` equal to
 `PUBLIC_ORIGIN` (or, with none configured, to its own `Host`), else it is a 403.
 A favourite is stored under the spelling of the city table (`gorzow+wielkopolski`
 and `Gorz%C3%B3w%20Wielkopolski` are one), never by its id, which shifts when the
-table is regenerated. The main page shows a star beside a city picked by name and
-a list of the favourites; a position fix has no name and cannot be starred.
+table is regenerated. The main page shows a star beside a city picked by name (or
+found as the nearest to the position) and a list of the favourites; bare
+coordinates cannot be starred.
 Never put a secret in a URL: the access log records the target, query string
 included.
 

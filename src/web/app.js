@@ -419,11 +419,8 @@ document.addEventListener("alpine:init", () => {
           needle.length === 0 ? items : items.filter((item) => item.search.includes(needle));
         if (this.active.kind === "storm" || !this.nearby) return matching;
 
-        const located = matching
-          .map((station) => ({ ...station, distance_km: distanceKm(this.location, station) }))
-          .filter((station) => station.distance_km != null);
-        if (located.length === 0) return matching;
-        return located.sort((a, b) => a.distance_km - b.distance_km).slice(0, nearby_limit);
+        const closest = byDistance(this.location, matching);
+        return closest.length === 0 ? matching : closest.slice(0, nearby_limit);
       },
 
       /* Warnings are narrowed by product and by text, then ordered by the
@@ -462,40 +459,23 @@ document.addEventListener("alpine:init", () => {
        * reuses that fix, so toggling the filter never prompts twice. A refused
        * or unavailable position is reported under the button and leaves every
        * list complete. */
-      toggle_nearby() {
+      async toggle_nearby() {
         if (this.nearby) {
           this.nearby = false;
           return;
         }
-        if (this.location) {
-          this.nearby = true;
-          return;
+        if (!this.location) {
+          this.locating = true;
+          this.location_error = "";
+          const fix = await locateUser();
+          this.locating = false;
+          if (fix.error) {
+            this.location_error = fix.error;
+            return;
+          }
+          this.location = fix.position;
         }
-        if (!navigator.geolocation) {
-          this.location_error = document.body.dataset.locationUnavailable;
-          return;
-        }
-
-        this.locating = true;
-        this.location_error = "";
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            this.location = {
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude,
-            };
-            this.nearby = true;
-            this.locating = false;
-          },
-          (error) => {
-            this.location_error =
-              error.code === permission_denied
-                ? document.body.dataset.locationDenied
-                : document.body.dataset.locationUnavailable;
-            this.locating = false;
-          },
-          { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 },
-        );
+        this.nearby = true;
       },
 
       step(delta) {
@@ -943,6 +923,36 @@ function distanceKm(from, place) {
   return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
+/* The places that have a position, each with its `distance_km` from the user,
+ * nearest first. */
+function byDistance(from, places) {
+  return places
+    .map((place) => ({ ...place, distance_km: distanceKm(from, place) }))
+    .filter((place) => place.distance_km != null)
+    .sort((a, b) => a.distance_km - b.distance_km);
+}
+
+/* Asks the browser where the user is: `{ position }` on success, or `{ error }`
+ * with the message to show. An explicitly refused position deserves a different
+ * message from one the browser could not determine. The browser's own cache
+ * (`maximumAge`) keeps repeated asks from prompting or waiting each time. */
+async function locateUser() {
+  const strings = document.body.dataset;
+  if (!navigator.geolocation) return { error: strings.locationUnavailable };
+  try {
+    const position = await new Promise((resolve, reject) =>
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: false,
+        timeout: 10000,
+        maximumAge: 600000,
+      }),
+    );
+    return { position: { latitude: position.coords.latitude, longitude: position.coords.longitude } };
+  } catch (error) {
+    return { error: error.code === permission_denied ? strings.locationDenied : strings.locationUnavailable };
+  }
+}
+
 /* A tenth of a kilometre matters while walking to the nearest station and
  * becomes noise once the station is tens of kilometres away. */
 function formatDistance(km) {
@@ -997,6 +1007,12 @@ function compassPoint(degrees) {
 
 const suggestion_limit = 8;
 
+/* A place that is a city of the list, so the page can offer to keep it as a
+ * favourite. */
+function namedPlace(city) {
+  return { name: city.name, label: city.name, latitude: city.latitude, longitude: city.longitude, named: true };
+}
+
 /* Only a city the user picked by name is remembered: a position fix is never
  * written to storage. */
 const last_place_key = "szklana.pogoda:last-place";
@@ -1029,7 +1045,8 @@ function forecast() {
     query: "",
     suggestions_open: false,
     active_index: -1,
-    /* `{ name, label, latitude, longitude }` for the place on show. */
+    /* `{ name, label, latitude, longitude, named }` for the place on show; `named`
+     * means `name` is a city of the list. */
     place: null,
     locating: false,
     loading: false,
@@ -1083,8 +1100,9 @@ function forecast() {
       }
     },
 
-    /* Only a place picked by name can be kept: a position fix has no name in the
-     * city list. Both spellings are folded, as the server folds them. */
+    /* Only a place with a city of the list behind it can be kept: the nearest
+     * city to a position qualifies, coordinates alone do not. Both spellings are
+     * folded, as the server folds them. */
     get is_favorite() {
       if (!this.place?.named) return false;
       const wanted = fold(this.place.name);
@@ -1133,7 +1151,7 @@ function forecast() {
         return;
       }
       this.query = city.name;
-      this.show_place({ name: city.name, label: city.name, latitude: city.latitude, longitude: city.longitude, named: true });
+      this.show_place(namedPlace(city));
     },
 
     get needle() {
@@ -1231,60 +1249,45 @@ function forecast() {
     pick(city) {
       this.query = city.name;
       this.suggestions_open = false;
-      const place = { name: city.name, label: city.name, latitude: city.latitude, longitude: city.longitude, named: true };
+      const place = namedPlace(city);
       this.remember(place);
       show_city_in_address(city.name);
       this.show_place(place);
     },
 
-    /* The position is asked for on every press; the browser's own cache
-     * (`maximumAge`) keeps that from prompting or waiting each time. */
+    /* The position is asked for on every press. */
     async locate() {
       if (this.locating) return;
-      if (!navigator.geolocation) {
-        this.status = document.body.dataset.locationUnavailable;
-        return;
-      }
 
       this.locating = true;
       this.status = "";
-      let position;
-      try {
-        position = await new Promise((resolve, reject) =>
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: false,
-            timeout: 10000,
-            maximumAge: 600000,
-          }),
-        );
-      } catch (error) {
-        this.status =
-          error.code === permission_denied
-            ? document.body.dataset.locationDenied
-            : document.body.dataset.locationUnavailable;
+      const fix = await locateUser();
+      if (fix.error) {
+        this.status = fix.error;
         this.locating = false;
         return;
       }
 
       const here = {
-        latitude: Number(position.coords.latitude.toFixed(4)),
-        longitude: Number(position.coords.longitude.toFixed(4)),
+        latitude: Number(fix.position.latitude.toFixed(4)),
+        longitude: Number(fix.position.longitude.toFixed(4)),
       };
       const cities = await this.load_cities();
       this.locating = false;
 
-      let nearest = null;
-      for (const city of cities ?? []) {
-        const km = distanceKm(here, city);
-        if (km != null && (nearest === null || km < nearest.km)) nearest = { name: city.name, km };
-      }
+      const [nearest] = byDistance(here, cities ?? []);
       this.query = "";
       show_city_in_address(null);
+      if (!nearest) {
+        this.show_place({ name: `${here.latitude}, ${here.longitude}`, label: `${here.latitude}, ${here.longitude}`, ...here });
+        return;
+      }
+      /* The nearest city is a city of the list like any other, so it can be
+       * starred; the forecast still follows the position, and the label says how
+       * far that city is. */
       this.show_place({
-        name: nearest?.name ?? `${here.latitude}, ${here.longitude}`,
-        label: nearest
-          ? `${document.body.dataset.forecastNearest}: ${nearest.name} (${formatDistance(nearest.km)})`
-          : `${here.latitude}, ${here.longitude}`,
+        ...namedPlace(nearest),
+        label: `${document.body.dataset.forecastNearest}: ${nearest.name} (${formatDistance(nearest.distance_km)})`,
         ...here,
       });
     },
@@ -1332,7 +1335,7 @@ function forecast() {
       try {
         const place = JSON.parse(localStorage.getItem(last_place_key));
         if (typeof place?.name === "string" && Number.isFinite(place.latitude) && Number.isFinite(place.longitude)) {
-          return { name: place.name, label: place.name, latitude: place.latitude, longitude: place.longitude, named: true };
+          return namedPlace(place);
         }
       } catch {
         /* Storage is a convenience: blocked or corrupt data means no memory. */
