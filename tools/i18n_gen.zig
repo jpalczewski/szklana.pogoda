@@ -1,4 +1,5 @@
 const std = @import("std");
+const compression = @import("compression");
 
 const max_file_bytes = 1024 * 1024;
 
@@ -22,6 +23,16 @@ const tag_space = " \t\r\n";
 /// What may stand between two arguments: space, and an optional comma.
 const argument_separators = tag_space ++ ",";
 
+/// What the build spends on each embedded file: the server sends it to every
+/// client that accepts gzip, so it is worth the slowest setting.
+const gzip_options = compression.Options.best;
+
+/// One embedded file in gzip form, keyed like `AssetVersion` by its file name.
+const Gzipped = struct {
+    name: []const u8,
+    bytes: []u8,
+};
+
 /// The content hash of one browser asset, keyed by its file name.
 const AssetVersion = struct {
     name: []const u8,
@@ -34,6 +45,10 @@ const AssetVersion = struct {
 /// input, so editing one re-renders the page, with its new hash for an asset.
 /// The icon source is rendered here into `/icons.svg` and `/favicon.svg`, which
 /// are hashed and linked like any asset.
+///
+/// Every file the server sends is also written in gzip form, as `gzipped.<name>`
+/// next to `versions.<name>`, because the build can afford the slowest setting
+/// once and the server should not compress the same bytes for every request.
 ///
 /// The page is made in two passes: `expandComponents` turns the template and
 /// its components into one flat template, then `render` fills in a locale.
@@ -57,6 +72,11 @@ pub fn main(init: std.process.Init) !void {
 
     var versions: std.ArrayList(AssetVersion) = .empty;
     defer versions.deinit(allocator);
+    var gzipped: std.ArrayList(Gzipped) = .empty;
+    defer {
+        for (gzipped.items) |file| allocator.free(file.bytes);
+        gzipped.deinit(allocator);
+    }
     var components: std.ArrayList(Component) = .empty;
     defer {
         for (components.items) |component| allocator.free(component.source);
@@ -74,10 +94,13 @@ pub fn main(init: std.process.Init) !void {
         } else {
             defer allocator.free(contents);
             try versions.append(allocator, .{ .name = file_name, .hash = std.hash.Wyhash.hash(0, contents) });
+            try gzipped.append(allocator, .{ .name = file_name, .bytes = try compression.gzip(allocator, contents, gzip_options) });
         }
     }
     try versions.append(allocator, .{ .name = "icons.svg", .hash = std.hash.Wyhash.hash(0, icons.sprite) });
     try versions.append(allocator, .{ .name = "favicon.svg", .hash = std.hash.Wyhash.hash(0, icons.favicon) });
+    try gzipped.append(allocator, .{ .name = "icons.svg", .bytes = try compression.gzip(allocator, icons.sprite, gzip_options) });
+    try gzipped.append(allocator, .{ .name = "favicon.svg", .bytes = try compression.gzip(allocator, icons.favicon, gzip_options) });
 
     const page = try expandComponents(allocator, template, components.items);
     defer allocator.free(page);
@@ -110,6 +133,25 @@ pub fn main(init: std.process.Init) !void {
         );
     }
     try generated.writer.writeAll("};\n");
+
+    const pl_gzip = try compression.gzip(allocator, pl_html, gzip_options);
+    defer allocator.free(pl_gzip);
+    const en_gzip = try compression.gzip(allocator, en_html, gzip_options);
+    defer allocator.free(en_gzip);
+    try generated.writer.print(
+        "pub const gzipped = struct {{\n" ++
+            "    pub const pl_html = \"{f}\";\n" ++
+            "    pub const en_html = \"{f}\";\n",
+        .{ std.zig.fmtString(pl_gzip), std.zig.fmtString(en_gzip) },
+    );
+    for (gzipped.items) |file| {
+        try generated.writer.print(
+            "    pub const {f} = \"{f}\";\n",
+            .{ std.zig.fmtId(file.name), std.zig.fmtString(file.bytes) },
+        );
+    }
+    try generated.writer.writeAll("};\n");
+
     try writeStrings(allocator, &generated.writer, "pl", pl_locale);
     try writeStrings(allocator, &generated.writer, "en", en_locale);
 

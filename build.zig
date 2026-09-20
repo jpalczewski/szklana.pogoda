@@ -5,12 +5,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // The generator compresses what it embeds with the code the server uses for
+    // what it builds per request, so both come from one file.
+    const compression_module = b.createModule(.{
+        .root_source_file = b.path("src/compression.zig"),
+        .target = b.graph.host,
+    });
     const i18n_generator = b.addExecutable(.{
         .name = "i18n-generator",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/i18n_gen.zig"),
             .target = b.graph.host,
             .optimize = .ReleaseSafe,
+            .imports = &.{.{ .name = "compression", .module = compression_module }},
         }),
     });
     const render_i18n = b.addRunArtifact(i18n_generator);
@@ -109,6 +116,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tools/i18n_gen.zig"),
             .target = b.graph.host,
             .optimize = optimize,
+            .imports = &.{.{ .name = "compression", .module = compression_module }},
         }),
     });
     const run_i18n_tests = b.addRunArtifact(i18n_tests);

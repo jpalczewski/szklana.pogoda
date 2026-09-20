@@ -4,6 +4,7 @@ const i18n = @import("i18n");
 const antistorm = @import("../antistorm/mod.zig");
 const link_preview = @import("../link_preview.zig");
 const openmeteo = @import("../openmeteo/mod.zig");
+const compression = @import("../compression.zig");
 
 const style_css = @embedFile("../web/98.css");
 const app_css = @embedFile("../web/app.css");
@@ -16,27 +17,34 @@ const immutable = "public, max-age=31536000, immutable";
 /// and an asset fetched without its hash could be any version of the file.
 const revalidate = "no-cache";
 
-pub const home = localizedHome(i18n.pl_html, i18n.pl);
+pub const home = localizedHome(i18n.pl_html, i18n.gzipped.pl_html, i18n.pl);
 
-pub const homeEn = localizedHome(i18n.en_html, i18n.en);
+pub const homeEn = localizedHome(i18n.en_html, i18n.gzipped.en_html, i18n.en);
 
 /// The page in one language. A link that names a city (`/?city=Zakopane`) gets
 /// that city's weather in its link-preview tags, because a messenger's crawler
 /// reads the HTML and does not run the page's script. The page never fails on
 /// that account: a city the table does not know, or a forecast that cannot be
 /// had, serves the page as it is.
-fn localizedHome(comptime html: []const u8, comptime Strings: type) router.Handler {
+fn localizedHome(comptime html: []const u8, comptime gzipped: []const u8, comptime Strings: type) router.Handler {
     const parts = splitAtLinkPreview(html);
     return struct {
         fn handle(app: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
-            const city = requestedCity(ctx) orelse return page(router.Response.html(html));
+            const city = requestedCity(ctx) orelse return page(encoded(ctx, router.Response.html(html), gzipped));
             const forecast = forecastFor(app, ctx.allocator, city);
             defer if (forecast) |known| known.deinit(ctx.allocator);
 
             const tags = try link_preview.render(ctx.allocator, Strings, city.name, forecast);
             defer ctx.allocator.free(tags);
             const body = try std.mem.concat(ctx.allocator, u8, &.{ parts.head, tags, parts.tail });
-            return page(router.Response.html(body));
+            if (!wantsGzip(ctx)) return page(varyOnEncoding(router.Response.html(body)));
+
+            // This page exists only for this request, so it is compressed now
+            // rather than by the build; the plain copy is not kept.
+            defer ctx.allocator.free(body);
+            var response = router.Response.html(try compression.gzip(ctx.allocator, body, .default));
+            response.content_encoding = gzip_coding;
+            return page(varyOnEncoding(response));
         }
     }.handle;
 }
@@ -81,11 +89,11 @@ fn forecastFor(app: *router.App, allocator: std.mem.Allocator, city: *const anti
 }
 
 pub fn style(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
-    return asset(ctx, router.Response.css(style_css), i18n.versions.@"98.css");
+    return asset(ctx, encoded(ctx, router.Response.css(style_css), i18n.gzipped.@"98.css"), i18n.versions.@"98.css");
 }
 
 pub fn appStyle(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
-    return asset(ctx, router.Response.css(app_css), i18n.versions.@"app.css");
+    return asset(ctx, encoded(ctx, router.Response.css(app_css), i18n.gzipped.@"app.css"), i18n.versions.@"app.css");
 }
 
 /// A script the page loads: the app's own files (see the script tags in
@@ -94,7 +102,7 @@ fn script(comptime name: []const u8) router.Handler {
     const body = @embedFile("../web/" ++ name);
     return struct {
         fn handle(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
-            return asset(ctx, router.Response.javascript(body), @field(i18n.versions, name));
+            return asset(ctx, encoded(ctx, router.Response.javascript(body), @field(i18n.gzipped, name)), @field(i18n.versions, name));
         }
     }.handle;
 }
@@ -112,12 +120,36 @@ pub const qrcodeScript = script("qrcode.js");
 /// The weather icons as one sprite of `<symbol>`s, drawn by the build from
 /// `src/web/weather_icons.txt`.
 pub fn iconSprite(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
-    return asset(ctx, router.Response.svg(i18n.icons_svg), i18n.versions.@"icons.svg");
+    return asset(ctx, encoded(ctx, router.Response.svg(i18n.icons_svg), i18n.gzipped.@"icons.svg"), i18n.versions.@"icons.svg");
 }
 
 /// The favicon: one of the same icons as a stand-alone image.
 pub fn favicon(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
-    return asset(ctx, router.Response.svg(i18n.favicon_svg), i18n.versions.@"favicon.svg");
+    return asset(ctx, encoded(ctx, router.Response.svg(i18n.favicon_svg), i18n.gzipped.@"favicon.svg"), i18n.versions.@"favicon.svg");
+}
+
+const gzip_coding = "gzip";
+
+fn wantsGzip(ctx: *const router.RequestContext) bool {
+    return compression.acceptsGzip(ctx.header("accept-encoding"));
+}
+
+/// The answer depends on `Accept-Encoding`, so a cache must key on it.
+fn varyOnEncoding(response: router.Response) router.Response {
+    var result = response;
+    result.vary = "Accept-Encoding";
+    return result;
+}
+
+/// `response` in gzip form when the client accepts it. `gzipped` is the same
+/// body compressed by the build, so nothing is compressed per request.
+fn encoded(ctx: *const router.RequestContext, response: router.Response, gzipped: []const u8) router.Response {
+    var result = varyOnEncoding(response);
+    if (wantsGzip(ctx)) {
+        result.body = gzipped;
+        result.content_encoding = gzip_coding;
+    }
+    return result;
 }
 
 fn page(response: router.Response) router.Response {
@@ -144,6 +176,16 @@ fn testContext(path: []const u8, query: ?[]const u8) router.RequestContext {
         .headers = &.{},
         .body = null,
     };
+}
+
+const accepts_gzip = [_]router.Header{.{ .name = "Accept-Encoding", .value = "gzip, deflate, br" }};
+
+fn gunzipped(bytes: []const u8) ![]u8 {
+    var input: std.Io.Reader = .fixed(bytes);
+    // zlinter-disable-next-line no_undefined - filled by the decompressor before being read
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var decompressor: std.compress.flate.Decompress = .init(&input, .gzip, &window);
+    return decompressor.reader.allocRemaining(std.testing.allocator, .unlimited);
 }
 
 test "the pages are always revalidated" {
@@ -372,4 +414,78 @@ test "text after the city in the query never reaches the tags" {
     const response = try home(&app, &ctx);
 
     try std.testing.expectEqualStrings(i18n.pl_html, response.body);
+}
+
+test "a client that accepts gzip gets the page and the assets as the build compressed them" {
+    var app: router.App = .{ .max_body_bytes = 16 };
+    var ctx = testContext("/", null);
+    ctx.headers = &accepts_gzip;
+
+    const polish = try home(&app, &ctx);
+    const english = try homeEn(&app, &ctx);
+    const script_response = try appScript(&app, &ctx);
+    const sprite = try iconSprite(&app, &ctx);
+
+    for ([_]router.Response{ polish, english, script_response, sprite }) |response| {
+        try std.testing.expectEqualStrings("gzip", response.content_encoding.?);
+        try std.testing.expectEqualStrings("Accept-Encoding", response.vary.?);
+    }
+    try std.testing.expectEqualStrings(i18n.gzipped.pl_html, polish.body);
+    try std.testing.expectEqualStrings(i18n.gzipped.en_html, english.body);
+    try std.testing.expectEqualStrings(i18n.gzipped.@"app.js", script_response.body);
+
+    const restored = try gunzipped(polish.body);
+    defer std.testing.allocator.free(restored);
+    try std.testing.expectEqualStrings(i18n.pl_html, restored);
+    try std.testing.expect(polish.body.len < i18n.pl_html.len / 2);
+}
+
+test "a client that does not accept gzip gets the plain body, still marked as varying" {
+    var app: router.App = .{ .max_body_bytes = 16 };
+    var ctx = testContext("/app.js", null);
+    const refusing = [_]router.Header{.{ .name = "Accept-Encoding", .value = "gzip;q=0, br" }};
+
+    const bare = try appScript(&app, &ctx);
+    ctx.headers = &refusing;
+    const refused = try appScript(&app, &ctx);
+
+    for ([_]router.Response{ bare, refused }) |response| {
+        try std.testing.expect(response.content_encoding == null);
+        try std.testing.expectEqualStrings("Accept-Encoding", response.vary.?);
+    }
+    try std.testing.expectEqualStrings(@embedFile("../web/app.js"), bare.body);
+    try std.testing.expectEqualStrings(@embedFile("../web/app.js"), refused.body);
+}
+
+test "every asset's gzip form is what its file compresses to" {
+    inline for (.{ "98.css", "app.css", "arrival.js", "lib.js", "windows.js", "account.js", "imgw.js", "forecast.js", "app.js", "alpine.js", "qrcode.js" }) |name| {
+        const restored = try gunzipped(@field(i18n.gzipped, name));
+        defer std.testing.allocator.free(restored);
+        try std.testing.expectEqualStrings(@embedFile("../web/" ++ name), restored);
+    }
+    const sprite = try gunzipped(i18n.gzipped.@"icons.svg");
+    defer std.testing.allocator.free(sprite);
+    try std.testing.expectEqualStrings(i18n.icons_svg, sprite);
+    const icon = try gunzipped(i18n.gzipped.@"favicon.svg");
+    defer std.testing.allocator.free(icon);
+    try std.testing.expectEqualStrings(i18n.favicon_svg, icon);
+}
+
+test "the page for a city is compressed per request when the client accepts gzip" {
+    var client = fixtureClient(&fetchFixture);
+    defer client.deinit();
+    var app: router.App = .{ .max_body_bytes = 16, .forecast = &client };
+    var ctx = testContext("/", "city=Zakopane");
+    ctx.headers = &accepts_gzip;
+
+    const response = try home(&app, &ctx);
+    defer std.testing.allocator.free(response.body);
+
+    try std.testing.expectEqualStrings("gzip", response.content_encoding.?);
+    try std.testing.expectEqualStrings("Accept-Encoding", response.vary.?);
+    try std.testing.expectEqualStrings(revalidate, response.cache_control.?);
+    const restored = try gunzipped(response.body);
+    defer std.testing.allocator.free(restored);
+    try std.testing.expect(contains(restored, "<meta property=\"og:title\" content=\"Zakopane: 18°C, pochmurno\" />"));
+    try std.testing.expect(std.mem.endsWith(u8, restored, "</html>\n"));
 }

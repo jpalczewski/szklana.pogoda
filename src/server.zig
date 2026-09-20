@@ -256,6 +256,8 @@ fn writeResponse(request: *http.Server.Request, response: router.Response) !void
         unused,
         unused,
         unused,
+        unused,
+        unused,
     };
     var count: usize = 1;
     if (response.allow) |allow| {
@@ -269,6 +271,16 @@ fn writeResponse(request: *http.Server.Request, response: router.Response) !void
 
     if (response.set_cookie) |set_cookie| {
         headers[count] = .{ .name = "set-cookie", .value = set_cookie };
+        count += 1;
+    }
+
+    if (response.content_encoding) |content_encoding| {
+        headers[count] = .{ .name = "content-encoding", .value = content_encoding };
+        count += 1;
+    }
+
+    if (response.vary) |vary| {
+        headers[count] = .{ .name = "vary", .value = vary };
         count += 1;
     }
 

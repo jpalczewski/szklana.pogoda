@@ -27,6 +27,7 @@ const process_memory = @import("process_memory.zig");
 const http_fetch = @import("http_fetch.zig");
 const trusted_proxies = @import("trusted_proxies.zig");
 const link_preview = @import("link_preview.zig");
+const compression = @import("compression.zig");
 
 /// Every module of the server, named once so the analysis below and the test
 /// collection at the end of this file cannot drift apart.
@@ -52,6 +53,7 @@ const modules = .{
     http_fetch,
     trusted_proxies,
     link_preview,
+    compression,
     accounts,
     account_route,
     favorites_route,

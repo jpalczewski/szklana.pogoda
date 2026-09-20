@@ -83,6 +83,11 @@ pub const Response = struct {
     cache_control: ?[]const u8 = null,
     /// Sent as `Set-Cookie` when set: the session cookie being issued or cleared.
     set_cookie: ?[]const u8 = null,
+    /// Sent as `Content-Encoding` when set: the coding `body` is already in.
+    content_encoding: ?[]const u8 = null,
+    /// Sent as `Vary` when set: the request headers the body depends on, so a
+    /// cache keeps the plain and the compressed forms apart.
+    vary: ?[]const u8 = null,
 
     pub fn html(body: []const u8) Response {
         return .{ .status = .ok, .content_type = "text/html; charset=utf-8", .body = body };
