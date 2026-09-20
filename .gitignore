@@ -2,4 +2,5 @@ zig-out/
 .zig-cache/
 zig-pkg/
 weather.db
+accounts.db
 .codex/config.toml
