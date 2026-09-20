@@ -61,17 +61,12 @@ fn splitAtLinkPreview(comptime html: []const u8) HtmlParts {
 }
 
 /// The city `?city=` names, resolved through the table like the API does. The
-/// query arrives percent-encoded, which `RequestContext.param` leaves alone, so
-/// the name is decoded here; a `+` is a space in a query string.
+/// name is percent-decoded first, because a browser sends it that way and
+/// `RequestContext.param` returns values verbatim.
 fn requestedCity(ctx: *const router.RequestContext) ?*const antistorm.cities.City {
-    const raw = ctx.param("city") orelse return null;
-    if (raw.len == 0 or raw.len > antistorm.cities.max_name_bytes * 3) return null;
-
+    // zlinter-disable-next-line no_undefined - filled by paramDecoded before being read
     var buffer: [antistorm.cities.max_name_bytes * 3]u8 = undefined;
-    const copy = buffer[0..raw.len];
-    for (raw, copy) |byte, *out| out.* = if (byte == '+') ' ' else byte;
-    const name = std.Uri.percentDecodeInPlace(copy);
-
+    const name = ctx.paramDecoded("city", &buffer) orelse return null;
     const found = antistorm.cities.find(name) orelse return null;
     return antistorm.cities.byId(found.id);
 }

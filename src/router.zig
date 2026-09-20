@@ -17,6 +17,8 @@ pub const App = struct {
     /// Anonymous users and their sessions; left null by tests that do not
     /// exercise the account routes.
     accounts: ?*accounts.Store = null,
+    /// Caps how often one address may make an account; null (tests) is no cap.
+    new_session_limiter: ?*accounts.Limiter = null,
     /// How the session cookie is named and flagged, which follows the scheme the
     /// site is served over.
     cookie_policy: accounts.cookie.Policy = .plain,
@@ -50,6 +52,8 @@ pub const AppError = std.mem.Allocator.Error || error{
     Unauthorized,
     /// A request that changes state did not come from the site's own pages.
     Forbidden,
+    /// One address asked for more than the route allows in its window.
+    TooManyRequests,
     AccountsUnavailable,
     /// The Open-Meteo endpoint could not be reached or answered with unusable
     /// data.
@@ -164,6 +168,18 @@ pub const RequestContext = struct {
         return null;
     }
 
+    /// `param`, percent-decoded into `buffer` with `+` read as a space. Null when
+    /// the parameter is absent or its decoded form does not fit `buffer`. The
+    /// text a browser sends for a name with diacritics arrives percent-encoded,
+    /// and `param` leaves it that way.
+    pub fn paramDecoded(self: *const RequestContext, name: []const u8, buffer: []u8) ?[]const u8 {
+        const raw = self.param(name) orelse return null;
+        if (raw.len > buffer.len) return null;
+        const copy = buffer[0..raw.len];
+        for (raw, copy) |byte, *out| out.* = if (byte == '+') ' ' else byte;
+        return std.Uri.percentDecodeInPlace(copy);
+    }
+
     /// Looks up the first query parameter called `name`. Values are returned
     /// verbatim: the keys the API accepts are ASCII identifiers and their values
     /// are handed to the store as they arrive.
@@ -213,6 +229,7 @@ pub fn errorResponse(allocator: std.mem.Allocator, path: []const u8, err: AppErr
         error.UnknownCity => errorFor(allocator, path, .not_found, .city_not_found),
         error.Unauthorized => errorFor(allocator, path, .unauthorized, .unauthorized),
         error.Forbidden => errorFor(allocator, path, .forbidden, .forbidden),
+        error.TooManyRequests => errorFor(allocator, path, .too_many_requests, .too_many_requests),
         error.StormUnavailable => errorFor(allocator, path, .bad_gateway, .storm_unavailable),
         error.ForecastUnavailable => errorFor(allocator, path, .bad_gateway, .forecast_unavailable),
         error.MemoryStatisticsUnavailable, error.WeatherStoreUnavailable, error.AccountsUnavailable, error.OutOfMemory => errorFor(allocator, path, .internal_server_error, .internal_server_error),
@@ -246,6 +263,7 @@ const ErrorMessage = enum {
     not_found,
     payload_too_large,
     storm_unavailable,
+    too_many_requests,
     unauthorized,
 
     fn apiText(self: ErrorMessage) []const u8 {
@@ -259,6 +277,7 @@ const ErrorMessage = enum {
             .not_found => "Not found",
             .payload_too_large => "Payload too large",
             .storm_unavailable => "Storm data unavailable",
+            .too_many_requests => "Too many requests",
             .unauthorized => "Unauthorized",
         };
     }
@@ -274,6 +293,7 @@ const ErrorMessage = enum {
             .not_found => "not found",
             .payload_too_large => "payload too large",
             .storm_unavailable => "storm data unavailable",
+            .too_many_requests => "too many requests",
             .unauthorized => "unauthorized",
         };
     }
@@ -362,9 +382,30 @@ test "router maps account failures onto 401, 403 and 500" {
     defer std.testing.allocator.free(forbidden.body);
     try std.testing.expectEqual(http.Status.forbidden, forbidden.status);
 
+    const limited = errorResponse(std.testing.allocator, "/api/me/favorites", error.TooManyRequests);
+    defer std.testing.allocator.free(limited.body);
+    try std.testing.expectEqual(http.Status.too_many_requests, limited.status);
+
     const unavailable = errorResponse(std.testing.allocator, "/api/me", error.AccountsUnavailable);
     defer std.testing.allocator.free(unavailable.body);
     try std.testing.expectEqual(http.Status.internal_server_error, unavailable.status);
+}
+
+test "a decoded parameter turns percent escapes and plus signs into text" {
+    var request: RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .GET,
+        .path = "/x",
+        .query = "a=1&city=Zielona+G%C3%B3ra&empty=",
+        .headers = &.{},
+        .body = null,
+    };
+    var buffer: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("Zielona Góra", request.paramDecoded("city", &buffer).?);
+    try std.testing.expectEqualStrings("", request.paramDecoded("empty", &buffer).?);
+    try std.testing.expect(request.paramDecoded("missing", &buffer) == null);
+    var tiny: [4]u8 = undefined;
+    try std.testing.expect(request.paramDecoded("city", &tiny) == null);
 }
 
 test "router maps storm failures onto 404 and 502" {
