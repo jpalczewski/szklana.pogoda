@@ -99,6 +99,16 @@ fn private(response: router.Response) router.Response {
     return marked;
 }
 
+/// Refuses a request whose body is not declared JSON. A page on another site can
+/// make a browser send a form or plain text to us, but not `application/json`
+/// without a preflight the server never answers, so this is a second line behind
+/// the `Origin` check for the routes that read a body.
+pub fn requireJson(request: *const router.RequestContext) router.AppError!void {
+    const declared = request.header("content-type") orelse return error.BadRequest;
+    const media_type = std.mem.trim(u8, declared[0 .. std.mem.findScalar(u8, declared, ';') orelse declared.len], " \t");
+    if (!std.ascii.eqlIgnoreCase(media_type, "application/json")) return error.BadRequest;
+}
+
 /// Refuses a request that changes state unless it names the site as its origin.
 /// A browser attaches `Origin` to every such request it makes and a page on
 /// another site cannot change it, which is what stops that page from riding the
@@ -323,6 +333,24 @@ test "one address may make only so many accounts, and known browsers do not coun
     first_request.headers = &.{ same_site, local_host };
     first_request.client_ip = "203.0.113.5";
     _ = try keep(&site.app, &first_request);
+}
+
+test "a body must be declared as JSON" {
+    var request: router.RequestContext = .{
+        .allocator = std.testing.allocator,
+        .method = .POST,
+        .path = "/api/me/login",
+        .query = null,
+        .headers = &.{.{ .name = "Content-Type", .value = "Application/JSON; charset=utf-8" }},
+        .body = null,
+    };
+    try requireJson(&request);
+    for ([_][]const u8{ "text/plain", "application/x-www-form-urlencoded", "application/jsonx", "" }) |declared| {
+        request.headers = &.{.{ .name = "Content-Type", .value = declared }};
+        try std.testing.expectError(error.BadRequest, requireJson(&request));
+    }
+    request.headers = &.{};
+    try std.testing.expectError(error.BadRequest, requireJson(&request));
 }
 
 test "the account routes need the accounts store" {
