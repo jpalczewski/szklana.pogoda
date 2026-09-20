@@ -188,6 +188,7 @@ const routes = [_]router.Route{
     .{ .method = .GET, .path = "/app.css", .handler = pages.appStyle },
     .{ .method = .GET, .path = "/app.js", .handler = pages.appScript },
     .{ .method = .GET, .path = "/alpine.js", .handler = pages.alpineScript },
+    .{ .method = .GET, .path = "/qrcode.js", .handler = pages.qrcodeScript },
     .{ .method = .GET, .path = "/icons.svg", .handler = pages.iconSprite },
     .{ .method = .GET, .path = "/favicon.svg", .handler = pages.favicon },
     .{ .method = .POST, .path = "/api/ping", .handler = api.ping },

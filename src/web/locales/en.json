@@ -169,7 +169,16 @@
   "account_limited": "Too many attempts. Try again in a few minutes.",
   "account_unavailable": "That did not work. Try again.",
   "account_signout": "Sign out of this browser",
-  "account_copy": "Copy",
+  "account_copy": "Copy code",
   "account_copied": "Copied",
+  "account_qr_label": "QR code to sign in another device",
+  "account_qr_note": "Scan it with the other device's camera, or copy the link to another computer. Open it yourself and do not pass it on: whoever has this link can sign in to the account.",
+  "account_copy_link": "Copy link",
+  "account_hide": "Hide",
+  "account_arrival_legend": "Sign in from a link",
+  "account_arrival_body": "This link signs this browser in to the account it was made from. Do it only if the code was shown on a device of your own. If someone sent you this link, cancel.",
+  "account_arrival_joined": "Favourites from this browser that will be added to the account and shown on its other devices:",
+  "account_arrival_confirm": "Sign in",
+  "account_arrival_cancel": "Cancel",
   "close": "Close"
 }

@@ -371,6 +371,32 @@ body {
   user-select: all;
 }
 
+/* A QR code is read by a camera, so it stays black on white with its own quiet
+ * zone whatever the page's theme, and a high-contrast or dark-mode extension must
+ * not invert it. */
+.account-qr {
+  background: #fff;
+  display: block;
+  forced-color-adjust: none;
+  margin: 0.5rem auto;
+  width: min(208px, 100%);
+}
+
+.account-qr svg {
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+.account-arrival-actions {
+  justify-content: flex-end;
+}
+
+.account-copy {
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
 .account-warning,
 .account-message.failed {
   font-weight: bold;

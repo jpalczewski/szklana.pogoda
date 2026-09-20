@@ -9,6 +9,7 @@ const style_css = @embedFile("../web/98.css");
 const app_css = @embedFile("../web/app.css");
 const app_js = @embedFile("../web/app.js");
 const alpine_js = @embedFile("../web/alpine.js");
+const qrcode_js = @embedFile("../web/qrcode.js");
 
 /// The pages link every asset as `/<file>?v=<content hash>`, so that URL never
 /// changes meaning and a browser or CDN may keep it for good.
@@ -98,6 +99,10 @@ pub fn alpineScript(_: *router.App, ctx: *router.RequestContext) router.AppError
     return asset(ctx, router.Response.javascript(alpine_js), i18n.versions.@"alpine.js");
 }
 
+pub fn qrcodeScript(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
+    return asset(ctx, router.Response.javascript(qrcode_js), i18n.versions.@"qrcode.js");
+}
+
 /// The weather icons as one sprite of `<symbol>`s, drawn by the build from
 /// `src/web/weather_icons.txt`.
 pub fn iconSprite(_: *router.App, ctx: *router.RequestContext) router.AppError!router.Response {
@@ -175,6 +180,7 @@ test "the served page links every asset by the hash the handlers expect" {
         "/app.css?v=" ++ i18n.versions.@"app.css",
         "/app.js?v=" ++ i18n.versions.@"app.js",
         "/alpine.js?v=" ++ i18n.versions.@"alpine.js",
+        "/qrcode.js?v=" ++ i18n.versions.@"qrcode.js",
         "/favicon.svg?v=" ++ i18n.versions.@"favicon.svg",
         "data-weather-icons=\"/icons.svg?v=" ++ i18n.versions.@"icons.svg",
     };

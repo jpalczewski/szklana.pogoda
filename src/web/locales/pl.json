@@ -169,7 +169,16 @@
   "account_limited": "Za dużo prób. Spróbuj za kilka minut.",
   "account_unavailable": "Nie udało się. Spróbuj ponownie.",
   "account_signout": "Wyloguj z tej przeglądarki",
-  "account_copy": "Kopiuj",
+  "account_copy": "Kopiuj kod",
   "account_copied": "Skopiowano",
+  "account_qr_label": "Kod QR do zalogowania drugiego urządzenia",
+  "account_qr_note": "Zeskanuj go aparatem drugiego urządzenia albo skopiuj link na drugi komputer. Otwórz go sam i nie wysyłaj dalej: kto ma ten link, może zalogować się do konta.",
+  "account_copy_link": "Kopiuj link",
+  "account_hide": "Ukryj",
+  "account_arrival_legend": "Zaloguj z linku",
+  "account_arrival_body": "Ten link zaloguje tę przeglądarkę do konta, z którego powstał. Zrób to tylko wtedy, gdy kod został pokazany na Twoim własnym urządzeniu. Jeśli ktoś przysłał Ci ten link, anuluj.",
+  "account_arrival_joined": "Ulubione z tej przeglądarki, które zostaną dołączone do konta i będą widoczne na jego innych urządzeniach:",
+  "account_arrival_confirm": "Zaloguj",
+  "account_arrival_cancel": "Anuluj",
   "close": "Zamknij"
 }

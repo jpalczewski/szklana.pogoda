@@ -1,3 +1,25 @@
+/* A sign-in link (`/#code=ABCDE12345`, made by `sign_in_link`) carries a transfer
+ * code in its fragment. It is taken out of the address the moment this script
+ * runs (or, in a tab that already shows the page, the moment the fragment
+ * changes), before anything can read, copy or share the address, and it is kept
+ * in memory only. Only the ten characters of a transfer code count: a login code is
+ * permanent and must never work as a link. A page that is only being prerendered
+ * is not being looked at, so it waits until it is shown. */
+const arrival_ready = document.prerendering
+  ? new Promise((resolve) => document.addEventListener("prerenderingchange", resolve, { once: true })).then(take_arrival_code)
+  : Promise.resolve(take_arrival_code());
+
+function take_arrival_code() {
+  const fragment = location.hash;
+  if (!fragment.startsWith("#code=")) return null;
+  try {
+    history.replaceState(history.state, "", location.pathname + location.search);
+  } catch {
+    /* The address is a convenience; the code is used all the same. */
+  }
+  return /^#code=([0-9A-Za-z]{10})$/.exec(fragment)?.[1] ?? null;
+}
+
 document.addEventListener("alpine:init", () => {
   Alpine.data("main_window", main_window);
   Alpine.data("forecast", forecast);
@@ -27,11 +49,19 @@ document.addEventListener("alpine:init", () => {
       ...base,
       session: false,
       has_recovery: false,
-      /* Whether this browser holds favourites that signing in would join to the
-       * account it signs in to, which is worth saying before it happens. */
-      has_favorites: false,
+      /* How many favourites this browser holds, which signing in would join to
+       * the account it signs in to: worth saying before it happens. */
+      favorites_count: 0,
+      /* The transfer code a sign-in link brought, while the person is asked
+       * whether to use it. It is never used without that. */
+      pending: "",
       /* `{ code, until }` with `until` in milliseconds. */
       transfer: null,
+      /* The address that signs a browser in with the transfer code, and its QR
+       * code as `{ side, view_box, path }`. Both are secrets exactly as the code
+       * is, and go with it. */
+      link: "",
+      qr: null,
       recovery: "",
       remaining: 0,
       timer: null,
@@ -41,10 +71,35 @@ document.addEventListener("alpine:init", () => {
       failed: false,
       clipboard: Boolean(navigator.clipboard?.writeText),
 
+      init() {
+        arrival_ready.then((code) => {
+          if (code) this.arrive(code);
+        });
+      },
+
+      /* A link pasted into a tab that already shows this page does not reload it:
+       * the browser only changes the fragment and says `hashchange`. */
+      arrive_from_address() {
+        const code = take_arrival_code();
+        if (code) this.arrive(code);
+      },
+
       show() {
         base.show.call(this);
         this.message = "";
         this.load();
+        if (this.pending) this.focus_cancel();
+      },
+
+      /* Asked whether to sign in, the safe answer has the focus. A browser that
+       * follows a link to a fragment moves the focus to the page after the event
+       * that opened the dialog, so it is set again a moment later. */
+      focus_cancel() {
+        const focus = () => {
+          if (this.open && this.pending) this.$refs.cancel?.focus();
+        };
+        this.$nextTick(focus);
+        setTimeout(focus, 100);
       },
 
       hide() {
@@ -55,9 +110,33 @@ document.addEventListener("alpine:init", () => {
 
       /* What is on screen only while the dialog is open. */
       forget() {
-        this.transfer = null;
+        this.drop_transfer();
         this.recovery = "";
         this.code = "";
+        this.pending = "";
+      },
+
+      /* Someone opened a sign-in link. Nothing happens until they say so: a link
+       * is easy to send, and one made from somebody else's code would put this
+       * browser's favourites into that account. */
+      arrive(code) {
+        this.pending = code;
+        this.show();
+      },
+
+      cancel_arrival() {
+        this.hide();
+      },
+
+      confirm_arrival() {
+        this.redeem(this.pending, true);
+      },
+
+      /* The transfer code and everything made from it leave the screen together. */
+      drop_transfer() {
+        this.transfer = null;
+        this.link = "";
+        this.qr = null;
         this.stop_timer();
       },
 
@@ -68,7 +147,7 @@ document.addEventListener("alpine:init", () => {
           const status = await me.json();
           this.session = status.session;
           this.has_recovery = status.has_recovery;
-          this.has_favorites = (await favorites.json()).favorites.length > 0;
+          this.favorites_count = (await favorites.json()).favorites.length;
         } catch (err) {
           console.error("account request failed", err);
           this.tell(document.body.dataset.accountUnavailable, true);
@@ -111,6 +190,8 @@ document.addEventListener("alpine:init", () => {
             return;
           }
           this.transfer = { code: result.data.code, until: Date.now() + result.data.expires_in_seconds * 1000 };
+          this.link = sign_in_link(result.data.code);
+          this.qr = qr_code(this.link);
           this.start_timer();
         } catch (err) {
           console.error("transfer code request failed", err);
@@ -134,10 +215,7 @@ document.addEventListener("alpine:init", () => {
       /* A code that has run out is taken off the screen, since it no longer works. */
       tick() {
         this.remaining = Math.max(0, Math.ceil(((this.transfer?.until ?? 0) - Date.now()) / 1000));
-        if (this.remaining === 0) {
-          this.transfer = null;
-          this.stop_timer();
-        }
+        if (this.remaining === 0) this.drop_transfer();
       },
 
       get remaining_text() {
@@ -166,14 +244,22 @@ document.addEventListener("alpine:init", () => {
         }
       },
 
-      async sign_in() {
-        const code = this.code.trim();
+      /* The code typed into the field. */
+      sign_in() {
+        return this.redeem(this.code.trim(), false);
+      },
+
+      /* Signs in with `code`. A code that came from a link is dropped when the
+       * server says it is no good: it cannot become good again, and the typed
+       * form is what is left. */
+      async redeem(code, from_link) {
         if (this.busy || code === "") return;
         this.busy = true;
         this.message = "";
         try {
           const result = await this.send("POST", "/api/me/login", { code });
           if (!result.ok) {
+            if (from_link && result.status === 401) this.pending = "";
             this.tell(this.failure(result.status), true);
             return;
           }
@@ -787,6 +873,45 @@ function modal() {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+/* The address another browser opens to sign in with a transfer code. The code
+ * is in the fragment, which a browser never sends to the server, so it is in
+ * neither the access log nor a `Referer`. The path keeps the page's language. */
+function sign_in_link(code) {
+  return `${location.origin}${location.pathname}#code=${code.replaceAll("-", "")}`;
+}
+
+/* A QR code for `text` as what an inline SVG needs: its side in modules, a
+ * `viewBox` and one path of the dark modules, with the four-module quiet zone the
+ * standard asks for. Runs of dark modules in a row are one segment, which keeps
+ * the path short. Null when the library is not there or the text does not fit,
+ * and the caller then shows the code as text alone. */
+function qr_code(text) {
+  if (typeof qrcodegen === "undefined") return null;
+  let symbol;
+  try {
+    symbol = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.MEDIUM);
+  } catch (err) {
+    console.error("QR code failed", err);
+    return null;
+  }
+  const border = 4;
+  const segments = [];
+  for (let y = 0; y < symbol.size; y++) {
+    let x = 0;
+    while (x < symbol.size) {
+      if (!symbol.getModule(x, y)) {
+        x++;
+        continue;
+      }
+      const start = x;
+      while (x < symbol.size && symbol.getModule(x, y)) x++;
+      segments.push(`M${start + border} ${y + border}h${x - start}v1h-${x - start}z`);
+    }
+  }
+  const side = symbol.size + 2 * border;
+  return { side, view_box: `0 0 ${side} ${side}`, path: segments.join("") };
 }
 
 /* How many stations the nearest list keeps. The list box shows twelve rows, so
