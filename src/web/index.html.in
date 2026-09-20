@@ -19,43 +19,24 @@
 </head>
 <body
   data-weather-icons="/icons.svg?v={{ version:icons.svg }}"
-  data-http-error="{{ http_error }}"
-  data-memory-unavailable="{{ memory_unavailable }}"
-  data-imgw-unavailable="{{ imgw_unavailable }}"
-  data-location-denied="{{ location_denied }}"
-  data-location-unavailable="{{ location_unavailable }}"
-  data-forecast-unavailable="{{ forecast_unavailable }}"
-  data-forecast-cities-unavailable="{{ forecast_cities_unavailable }}"
-  data-forecast-nearest="{{ forecast_nearest }}"
-  data-favorite-add="{{ favorite_add }}"
-  data-favorite-remove="{{ favorite_remove }}"
-  data-favorites-unavailable="{{ favorites_unavailable }}"
-  data-favorites-full="{{ favorites_full }}"
-  data-account-invalid="{{ account_invalid }}"
-  data-account-limited="{{ account_limited }}"
-  data-account-unavailable="{{ account_unavailable }}"
-  data-account-signin-done="{{ account_signin_done }}"
-  data-account-signin-done-merged="{{ account_signin_done_merged }}"
-  data-account-copied="{{ account_copied }}"
-  data-wmo-clear="{{ wmo_clear }}"
-  data-wmo-partly="{{ wmo_partly }}"
-  data-wmo-cloudy="{{ wmo_cloudy }}"
-  data-wmo-fog="{{ wmo_fog }}"
-  data-wmo-drizzle="{{ wmo_drizzle }}"
-  data-wmo-rain="{{ wmo_rain }}"
-  data-wmo-showers="{{ wmo_showers }}"
-  data-wmo-snow="{{ wmo_snow }}"
-  data-wmo-thunderstorm="{{ wmo_thunderstorm }}"
-  data-imgw-search-placeholder="{{ imgw_search_placeholder }}"
-  data-imgw-warning-search-placeholder="{{ imgw_warning_search_placeholder }}"
-  data-imgw-warning-source-meteo="{{ imgw_warning_source_meteo }}"
-  data-imgw-warning-source-hydro="{{ imgw_warning_source_hydro }}"
-  data-imgw-warning-severity="{{ imgw_warning_severity }}"
-  data-imgw-storm-search-placeholder="{{ imgw_storm_search_placeholder }}"
-  data-imgw-storm-yes="{{ imgw_storm_yes }}"
-  data-imgw-storm-no="{{ imgw_storm_no }}"
-  data-imgw-storm-just-now="{{ imgw_storm_just_now }}"
-  data-imgw-storm-unavailable="{{ imgw_storm_unavailable }}"
+  {#
+    Each key becomes `data-<key>` with its dashes: `http_error` is read as
+    `document.body.dataset.httpError`.
+  #}
+  {% dataset
+    http_error, memory_unavailable,
+    imgw_unavailable,
+    location_denied, location_unavailable,
+    forecast_unavailable, forecast_cities_unavailable, forecast_nearest,
+    favorite_add, favorite_remove, favorites_unavailable, favorites_full,
+    account_invalid, account_limited, account_unavailable,
+    account_signin_done, account_signin_done_merged, account_copied,
+    wmo_clear, wmo_partly, wmo_cloudy, wmo_fog, wmo_drizzle,
+    wmo_rain, wmo_showers, wmo_snow, wmo_thunderstorm,
+    imgw_search_placeholder, imgw_warning_search_placeholder,
+    imgw_warning_source_meteo, imgw_warning_source_hydro, imgw_warning_severity,
+    imgw_storm_search_placeholder, imgw_storm_yes, imgw_storm_no, imgw_storm_just_now, imgw_storm_unavailable
+  %}
 >
   <div
     class="window app-window"

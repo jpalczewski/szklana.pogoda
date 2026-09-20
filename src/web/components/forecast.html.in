@@ -81,14 +81,10 @@
             <span x-text="now.text"></span>
           </p>
           <dl class="forecast-facts">
-            <dt>{{ forecast_feels_like }}</dt>
-            <dd x-text="now.apparent"></dd>
-            <dt>{{ forecast_humidity }}</dt>
-            <dd x-text="now.humidity"></dd>
-            <dt>{{ forecast_wind }}</dt>
-            <dd x-text="now.wind"></dd>
-            <dt>{{ forecast_precipitation }}</dt>
-            <dd x-text="now.precipitation"></dd>
+            {% include "detail" label="{{ forecast_feels_like }}" value="now.apparent" %}
+            {% include "detail" label="{{ forecast_humidity }}" value="now.humidity" %}
+            {% include "detail" label="{{ forecast_wind }}" value="now.wind" %}
+            {% include "detail" label="{{ forecast_precipitation }}" value="now.precipitation" %}
           </dl>
         </div>
       </template>

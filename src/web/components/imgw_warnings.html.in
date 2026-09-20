@@ -9,7 +9,7 @@
     </select>
   </div>
   {% include "load_state" busy="active.loading" failed="active.error" %}
-  {% call "imgw_list" id=warnings item=warning count="{{ imgw_warning_count }}" %}{{ imgw_warning_list }}{% endcall %}
+  {% call "imgw_listbox" id=warnings item=warning count="{{ imgw_warning_count }}" %}{{ imgw_warning_list }}{% endcall %}
   {% call "status" when="!active.loading && !active.error && (active.items ?? []).length === 0" %}{{ imgw_warning_empty_all }}{% endcall %}
   {% call "status" when="!active.loading && !active.error && (active.items ?? []).length > 0 && filtered.length === 0" %}{{ imgw_warning_empty_filter }}{% endcall %}
   {% call "status" when="!active.selected && !active.loading" %}{{ imgw_warning_no_selection }}{% endcall %}

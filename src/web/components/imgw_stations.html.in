@@ -26,7 +26,7 @@
     ></span>
   </div>
   {% include "load_state" busy="active.loading" failed="active.error" %}
-  {% call "imgw_list" id=stations item=station count="{{ imgw_count }}" %}
+  {% call "imgw_listbox" id=stations item=station count="{{ imgw_count }}" %}
     <span x-show="!nearby || !nearby_supported">{{ imgw_list }}</span>
     <span x-show="nearby && nearby_supported" x-cloak>{{ imgw_nearby_list }}</span>
   {% endcall %}

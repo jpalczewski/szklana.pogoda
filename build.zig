@@ -32,8 +32,8 @@ pub fn build(b: *std.Build) void {
     // a file is a component from its `.html.in` suffix, and takes its name from
     // the rest, so a new one only needs its name added here.
     for ([_][]const u8{
-        "about",  "account",   "detail",        "dialog",     "forecast", "forecast_tab",  "forecast_tabpanel",
-        "imgw",   "imgw_list", "imgw_stations", "imgw_storm", "imgw_tab", "imgw_warnings", "load_state",
+        "about",  "account",      "detail",        "dialog",     "forecast", "forecast_tab",  "forecast_tabpanel",
+        "imgw",   "imgw_listbox", "imgw_stations", "imgw_storm", "imgw_tab", "imgw_warnings", "load_state",
         "status",
     }) |component| {
         render_i18n.addFileArg(b.path(b.fmt("src/web/components/{s}.html.in", .{component})));

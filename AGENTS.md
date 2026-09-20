@@ -35,13 +35,14 @@ The page's own script is split by component into classic scripts in `src/web/`: 
 `src/web/index.html.in` is only the page's outline: the `<head>`, the `data-*` strings the scripts read, the main window and the `<script>` tags. The rest is split into components in `src/web/components/`, one `<name>.html.in` file each, and `tools/i18n_gen.zig` builds the page in two passes: `expandComponents` splices the components into one flat template, then `render` fills in a locale (`{{ key }}` for a string, `{{ version:<file> }}` for an asset hash; the space inside the braces is optional).
 
 - `{% include "name" arg=value %}` inserts a component; `{% call "name" arg=value %}…{% endcall %}` inserts one with a body, which the component places with `{{ caller() }}`. `{# … #}` is a comment and leaves nothing in the page.
+- `{% dataset http_error, imgw_unavailable %}` writes `data-http-error="{{ http_error }}"` and so on for each key: the strings the scripts read from `document.body.dataset` (`dataset.httpError`). A new string for a script is added to both locale files and to that list in `index.html.in`; a key a locale lacks fails the build like any other placeholder.
 - A component that takes arguments starts with `{% params a, b="default" %}`. A parameter with a default is optional, the others are required, and a call that passes an argument the component does not declare fails the build. Inside the component `{{ a }}` is the argument, inserted as written (the template's author wrote it, so it is not escaped). A parameter shadows a translation key of the same name inside its component; keep the names apart (`busy`, not `loading`).
 - An argument is a bare word or a quoted string (either quote, no escapes), and may hold a `{{ key }}`: pass a text as `label="{{ imgw_river }}"` and `render` translates and escapes it. An argument and a body are expanded where they are written, so they see the parameters of the component that wrote them, not of the one they are passed to.
-- Components include components. The build stops on an unknown component, a missing or unknown argument, an unclosed `call` and a component that includes itself.
+- Components include components. The build stops on an unknown component, a missing or unknown argument, an unclosed `call`, a `call` body the component never places with `{{ caller() }}`, and a component that includes itself.
 - A new component needs its name added to the list in `build.zig`. Like an asset it is a file argument of the generator, so editing one re-renders the page; the generator tells it from an asset by the `.html.in` suffix.
 - The link-preview markers stay in `index.html.in`: `pages.zig` splits the page at the first occurrence of each.
 
-Use a component for markup that occurs more than once with only its words or ids changing (`dialog`, the tabs, `detail`, `imgw_list`), and for a part large enough to read on its own (`forecast`, `imgw`, `account`, `about`). Rendered output is the same as the template written out in full, apart from whitespace.
+Use a component for markup that occurs more than once with only its words or ids changing (`dialog`, the tabs, `detail`, `imgw_listbox`), and for a part large enough to read on its own (`forecast`, `imgw`, `account`, `about`). Rendered output is the same as the template written out in full, apart from whitespace.
 
 ## Vendored assets
 

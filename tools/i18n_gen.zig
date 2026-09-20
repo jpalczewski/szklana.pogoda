@@ -185,6 +185,7 @@ const ExpandError = error{
     MissingArgument,
     UnknownArgument,
     MissingCaller,
+    UnusedCaller,
     UnclosedCall,
     UnexpectedEndCall,
     ComponentsTooDeep,
@@ -205,7 +206,8 @@ const ExpandError = error{
 /// a `{{ key }}`, which passes through and is translated by `render`; it is
 /// expanded in the caller's scope, so a body and an argument see the
 /// parameters of the component that wrote them. `{# … #}` is a comment and
-/// leaves no trace. Anything else in `{{ … }}` is left for `render`, so a
+/// leaves no trace. `{% dataset a_b, c %}` writes the `data-*` attributes for
+/// those keys (see `appendDataset`). Anything else in `{{ … }}` is left for `render`, so a
 /// parameter shadows a translation key of the same name inside its component.
 fn expandComponents(allocator: std.mem.Allocator, template: []const u8, components: []const Component) ![]u8 {
     var arena: std.heap.ArenaAllocator = .init(allocator);
@@ -249,6 +251,8 @@ const Expander = struct {
                         const body = template[tag.end..end.start];
                         try output.appendSlice(self.arena, try self.include(statement.rest, body, frame, depth));
                         position = end.after;
+                    } else if (std.mem.eql(u8, statement.word, "dataset")) {
+                        try appendDataset(&output, self.arena, statement.rest);
                     } else if (std.mem.eql(u8, statement.word, "params")) {
                         position = skipLineBreak(template, tag.end);
                     } else if (std.mem.eql(u8, statement.word, "endcall")) {
@@ -271,6 +275,7 @@ const Expander = struct {
         var rest = call;
         const name = try takeValue(&rest);
         const component = self.find(name) orelse return error.UnknownComponent;
+        if (body != null and !usesCaller(component.source)) return error.UnusedCaller;
         const parameters = try self.parametersOf(component.source);
 
         var arguments: std.ArrayList(Argument) = .empty;
@@ -314,6 +319,37 @@ const Expander = struct {
         return &.{};
     }
 };
+
+/// Whether a component places the body of a `call` block.
+fn usesCaller(source: []const u8) bool {
+    var position: usize = 0;
+    while (findTag(source, position)) |open| {
+        const tag = readTag(source, open) catch return false;
+        position = tag.end;
+        if (tag.kind == .variable and std.mem.eql(u8, tag.inner, "caller()")) return true;
+    }
+    return false;
+}
+
+/// `{% dataset http_error, imgw_unavailable %}` writes one attribute for each
+/// key, `data-http-error="{{ http_error }}"`, so the page hands the scripts a
+/// string as `dataset.httpError` without spelling its name twice. The key is
+/// translated by `render` like any other, so a key that no locale has fails the
+/// build.
+fn appendDataset(output: *std.ArrayList(u8), allocator: std.mem.Allocator, keys: []const u8) ExpandError!void {
+    var rest = keys;
+    var first = true;
+    while (true) {
+        rest = std.mem.trimStart(u8, rest, argument_separators);
+        if (rest.len == 0) break;
+        const key = try takeValue(&rest);
+        if (!first) try output.append(allocator, '\n');
+        first = false;
+        try output.appendSlice(allocator, "data-");
+        for (key) |letter| try output.append(allocator, if (letter == '_') '-' else letter);
+        try output.print(allocator, "=\"{{{{ {s} }}}}\"", .{key});
+    }
+}
 
 fn findParameter(parameters: []const Parameter, name: []const u8) ?Parameter {
     for (parameters) |parameter| {
@@ -858,4 +894,27 @@ test "an expanded page renders for a locale" {
     const rendered = try render(std.testing.allocator, page, "{\"close\": \"Close & go\"}", &.{});
     defer std.testing.allocator.free(rendered);
     try std.testing.expectEqualStrings("<button>Close &amp; go</button>", rendered);
+}
+
+test "a call block that the component never places is an error" {
+    const components = [_]Component{.{ .name = "flat", .source = "<hr>" }};
+    try std.testing.expectError(error.UnusedCaller, expandComponents(std.testing.allocator, "{% call \"flat\" %}x{% endcall %}", &components));
+}
+
+test "dataset writes one attribute per key" {
+    try expectExpanded(
+        "<body data-http-error=\"{{ http_error }}\"\ndata-a=\"{{ a }}\"\ndata-imgw-storm-yes=\"{{ imgw_storm_yes }}\">",
+        "<body {% dataset http_error, a\n  imgw_storm_yes %}>",
+        &.{},
+    );
+    try expectExpanded("<body >", "<body {% dataset %}>", &.{});
+}
+
+test "dataset attributes are translated like any other key" {
+    const page = try expandComponents(std.testing.allocator, "<body {% dataset http_error %}>", &.{});
+    defer std.testing.allocator.free(page);
+    const rendered = try render(std.testing.allocator, page, "{\"http_error\": \"Blad \\\"x\\\"\"}", &.{});
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expectEqualStrings("<body data-http-error=\"Blad &quot;x&quot;\">", rendered);
+    try std.testing.expectError(error.MissingTranslation, render(std.testing.allocator, page, "{}", &.{}));
 }
