@@ -1,0 +1,13 @@
+{# The list box of one IMGW tab, with its count and its label. `id` names the
+   list, `item` the variable of one entry, `count` is the (translated) caption
+   of the count, and the caller's block is the label. #}
+{% params id, item, count %}
+<p class="imgw-count" x-show="!active.loading && !active.error" x-cloak>
+  {{ count }} <span x-text="filtered.length"></span>
+</p>
+<label class="imgw-list-label" for="imgw-list-{{ id }}">{{ caller() }}</label>
+<select class="imgw-list" id="imgw-list-{{ id }}" multiple size="12" @change="pick">
+  <template x-for="{{ item }} in filtered" :key="{{ item }}.key">
+    <option :value="{{ item }}.key" x-text="describe({{ item }})"></option>
+  </template>
+</select>

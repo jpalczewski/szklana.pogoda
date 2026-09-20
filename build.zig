@@ -27,6 +27,17 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "98.css", "app.css", "arrival.js", "lib.js", "windows.js", "account.js", "imgw.js", "forecast.js", "app.js", "alpine.js", "qrcode.js" }) |asset| {
         render_i18n.addFileArg(b.path(b.fmt("src/web/{s}", .{asset})));
     }
+    // The template is assembled from these components (`{% include %}` and
+    // `{% call %}` in `index.html.in` and in each other). The generator learns
+    // a file is a component from its `.html.in` suffix, and takes its name from
+    // the rest, so a new one only needs its name added here.
+    for ([_][]const u8{
+        "about",  "account",   "detail",        "dialog",     "forecast", "forecast_tab",  "forecast_tabpanel",
+        "imgw",   "imgw_list", "imgw_stations", "imgw_storm", "imgw_tab", "imgw_warnings", "load_state",
+        "status",
+    }) |component| {
+        render_i18n.addFileArg(b.path(b.fmt("src/web/components/{s}.html.in", .{component})));
+    }
     const i18n_module = b.createModule(.{
         .root_source_file = i18n_source,
         .target = target,

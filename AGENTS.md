@@ -30,6 +30,19 @@ Every source file is listed in the `modules` tuple in `src/main.zig`. Add a new 
 
 The page's own script is split by component into classic scripts in `src/web/`: `arrival.js` (the sign-in link, which must load first), `lib.js` (helpers shared by components), `windows.js`, `account.js`, `imgw.js`, `forecast.js` and `app.js`, which only registers the components with Alpine. They share one global scope, not ES modules: a module's `import` specifier is invisible to the template renderer, so it could not carry the `?v=<hash>` that lets an asset be cached for good. The `<script defer>` tags in `index.html.in` set the load order, and Alpine loads last, so every function is defined before `alpine:init` runs. A top-level `const` or `function` name must be unique across all of them. A new file is added in four places: the asset list in `build.zig`, a `script("…")` line in `routes/pages.zig` (and its link in that file's test), the route in `main.zig` and the tag in `index.html.in`.
 
+## Page template
+
+`src/web/index.html.in` is only the page's outline: the `<head>`, the `data-*` strings the scripts read, the main window and the `<script>` tags. The rest is split into components in `src/web/components/`, one `<name>.html.in` file each, and `tools/i18n_gen.zig` builds the page in two passes: `expandComponents` splices the components into one flat template, then `render` fills in a locale (`{{ key }}` for a string, `{{ version:<file> }}` for an asset hash; the space inside the braces is optional).
+
+- `{% include "name" arg=value %}` inserts a component; `{% call "name" arg=value %}…{% endcall %}` inserts one with a body, which the component places with `{{ caller() }}`. `{# … #}` is a comment and leaves nothing in the page.
+- A component that takes arguments starts with `{% params a, b="default" %}`. A parameter with a default is optional, the others are required, and a call that passes an argument the component does not declare fails the build. Inside the component `{{ a }}` is the argument, inserted as written (the template's author wrote it, so it is not escaped). A parameter shadows a translation key of the same name inside its component; keep the names apart (`busy`, not `loading`).
+- An argument is a bare word or a quoted string (either quote, no escapes), and may hold a `{{ key }}`: pass a text as `label="{{ imgw_river }}"` and `render` translates and escapes it. An argument and a body are expanded where they are written, so they see the parameters of the component that wrote them, not of the one they are passed to.
+- Components include components. The build stops on an unknown component, a missing or unknown argument, an unclosed `call` and a component that includes itself.
+- A new component needs its name added to the list in `build.zig`. Like an asset it is a file argument of the generator, so editing one re-renders the page; the generator tells it from an asset by the `.html.in` suffix.
+- The link-preview markers stay in `index.html.in`: `pages.zig` splits the page at the first occurrence of each.
+
+Use a component for markup that occurs more than once with only its words or ids changing (`dialog`, the tabs, `detail`, `imgw_list`), and for a part large enough to read on its own (`forecast`, `imgw`, `account`, `about`). Rendered output is the same as the template written out in full, apart from whitespace.
+
 ## Vendored assets
 
 Two browser assets are third-party files kept whole in `src/web/`, so an update is a deliberate replacement and never an edit in place.

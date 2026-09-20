@@ -1,0 +1,12 @@
+{# One tab of the IMGW dialog, which lists the data of kind `value`. #}
+{% params value, label %}
+<li
+  role="tab"
+  id="imgw-tab-{{ value }}"
+  data-tab="{{ value }}"
+  :aria-selected="tab === '{{ value }}' ? 'true' : 'false'"
+  :tabindex="tab === '{{ value }}' ? 0 : -1"
+  @click="select('{{ value }}')"
+  @keydown.left.prevent="step(-1)"
+  @keydown.right.prevent="step(1)"
+><a href="#imgw-panel" @click.prevent>{{ label }}</a></li>

@@ -1,0 +1,53 @@
+{# The warnings tab of the IMGW dialog. #}
+<div class="imgw-warnings" x-show="tab === 'warnings'" x-cloak>
+  <div class="field-row imgw-warning-source">
+    <label for="imgw-warning-source">{{ imgw_warning_source_filter }}</label>
+    <select id="imgw-warning-source" x-model="source_filter">
+      <option value="">{{ imgw_warning_source_all }}</option>
+      <option value="meteo">{{ imgw_warning_source_meteo }}</option>
+      <option value="hydro">{{ imgw_warning_source_hydro }}</option>
+    </select>
+  </div>
+  {% include "load_state" busy="active.loading" failed="active.error" %}
+  {% call "imgw_list" id=warnings item=warning count="{{ imgw_warning_count }}" %}{{ imgw_warning_list }}{% endcall %}
+  {% call "status" when="!active.loading && !active.error && (active.items ?? []).length === 0" %}{{ imgw_warning_empty_all }}{% endcall %}
+  {% call "status" when="!active.loading && !active.error && (active.items ?? []).length > 0 && filtered.length === 0" %}{{ imgw_warning_empty_filter }}{% endcall %}
+  {% call "status" when="!active.selected && !active.loading" %}{{ imgw_warning_no_selection }}{% endcall %}
+  <div class="imgw-details" x-show="active.selected" x-cloak>
+    <h3 class="imgw-details-title">
+      <span x-text="format_value(active.detail?.event)"></span>
+      <span
+        class="imgw-warning-badge"
+        :class="severity_class(active.detail)"
+        x-text="severity_label(active.detail)"
+      ></span>
+    </h3>
+    <dl class="imgw-detail-list">
+      {% include "detail" label="{{ imgw_warning_source }}" value="source_label(active.detail)" %}
+      {% include "detail" label="{{ imgw_warning_severity }}" value="severity_label(active.detail)" %}
+      {% include "detail" label="{{ imgw_warning_probability }}" value="format_value(active.detail?.probability_percent, '%')" %}
+      {% include "detail" label="{{ imgw_warning_valid_from }}" value="format_value(active.detail?.effective_from)" %}
+      {% include "detail" label="{{ imgw_warning_valid_to }}" value="format_value(active.detail?.effective_to)" %}
+      {% include "detail" label="{{ imgw_warning_office }}" value="format_value(active.detail?.office)" %}
+      {% include "detail" label="{{ imgw_warning_published }}" value="format_value(active.detail?.published_at)" %}
+    </dl>
+    <h4 class="imgw-warning-heading">{{ imgw_warning_content }}</h4>
+    <p class="imgw-warning-text" x-text="format_value(active.detail?.content)"></p>
+    <template x-if="active.detail?.comment">
+      <div>
+        <h4 class="imgw-warning-heading">{{ imgw_warning_comment }}</h4>
+        <p class="imgw-warning-text" x-text="active.detail.comment"></p>
+      </div>
+    </template>
+    <h4 class="imgw-warning-heading">{{ imgw_warning_areas }}</h4>
+    <ul class="imgw-warning-areas" x-show="warning_areas(active.detail).length > 0">
+      <template x-for="(area, index) in warning_areas(active.detail)" :key="index">
+        <li x-text="area"></li>
+      </template>
+    </ul>
+    <p
+      class="imgw-status"
+      x-show="warning_areas(active.detail).length === 0"
+    >{{ imgw_warning_no_areas }}</p>
+  </div>
+</div>

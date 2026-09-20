@@ -1,0 +1,83 @@
+{# The station tabs (synop, hydro, meteo) of the IMGW dialog. #}
+<div class="imgw-stations" x-show="tab !== 'warnings' && tab !== 'storm'">
+  <div class="field-row imgw-nearby">
+    <button
+      type="button"
+      x-show="nearby_supported"
+      x-cloak
+      :aria-pressed="nearby ? 'true' : 'false'"
+      :disabled="locating"
+      @click="toggle_nearby"
+    >
+      <span x-show="!nearby">{{ imgw_nearby }}</span>
+      <span x-show="nearby" x-cloak>{{ imgw_nearby_off }}</span>
+    </button>
+    <span
+      class="imgw-nearby-hint"
+      x-show="active.items && !nearby_supported"
+      x-cloak
+    >{{ imgw_nearby_unsupported }}</span>
+    <span class="imgw-status" x-show="locating" x-cloak>{{ imgw_locating }}</span>
+    <span
+      class="imgw-status"
+      x-show="location_error"
+      x-cloak
+      x-text="location_error"
+    ></span>
+  </div>
+  {% include "load_state" busy="active.loading" failed="active.error" %}
+  {% call "imgw_list" id=stations item=station count="{{ imgw_count }}" %}
+    <span x-show="!nearby || !nearby_supported">{{ imgw_list }}</span>
+    <span x-show="nearby && nearby_supported" x-cloak>{{ imgw_nearby_list }}</span>
+  {% endcall %}
+  {% call "status" when="!active.loading && !active.error && filtered.length === 0" %}{{ imgw_empty }}{% endcall %}
+  {% call "status" when="!active.selected && !active.loading" %}{{ imgw_no_selection }}{% endcall %}
+  <div class="imgw-details" x-show="active.selected" x-cloak>
+    <h3 class="imgw-details-title">{{ imgw_details }}</h3>
+    {% include "load_state" busy="active.detail_loading" failed="active.detail_error" %}
+    <dl
+      class="imgw-detail-list"
+      x-show="active.kind === 'weather' && active.detail"
+      x-cloak
+    >
+      {% include "detail" label="{{ imgw_station_id }}" value="format_value(active.detail?.station_id)" %}
+      {% include "detail" label="{{ imgw_station_name }}" value="format_value(active.detail?.station_name)" %}
+      {% include "detail" label="{{ imgw_observed_at }}" value="format_value(active.detail?.observed_at)" %}
+      {% include "detail" label="{{ imgw_temperature }}" value="format_value(active.detail?.temperature_c, '°C')" %}
+      {% include "detail" label="{{ imgw_wind_speed }}" value="format_value(active.detail?.wind_speed_m_s, 'm/s')" %}
+      {% include "detail" label="{{ imgw_wind_direction }}" value="format_value(active.detail?.wind_direction_deg, '°')" %}
+      {% include "detail" label="{{ imgw_humidity }}" value="format_value(active.detail?.relative_humidity_percent, '%')" %}
+      {% include "detail" label="{{ imgw_precipitation }}" value="format_value(active.detail?.precipitation_mm, 'mm')" %}
+      {% include "detail" label="{{ imgw_pressure }}" value="format_value(active.detail?.pressure_hpa, 'hPa')" %}
+      <template x-if="active.detail?.latitude != null">
+        <dt>{{ imgw_coordinates }}</dt>
+      </template>
+      <template x-if="active.detail?.latitude != null">
+        <dd x-text="coordinates(active.detail)"></dd>
+      </template>
+    </dl>
+    <dl
+      class="imgw-detail-list"
+      x-show="active.kind === 'hydro' && active.detail"
+      x-cloak
+    >
+      {% include "detail" label="{{ imgw_station_id }}" value="format_value(active.detail?.station_id)" %}
+      {% include "detail" label="{{ imgw_station_name }}" value="format_value(active.detail?.station_name)" %}
+      {% include "detail" label="{{ imgw_river }}" value="format_value(active.detail?.river)" %}
+      {% include "detail" label="{{ imgw_voivodeship }}" value="format_value(active.detail?.voivodeship)" %}
+      {% include "detail" label="{{ imgw_water_level }}" value="format_value(active.detail?.water_level_cm, 'cm')" %}
+      {% include "detail" label="{{ imgw_water_level_status }}" value="format_value(active.detail?.water_level_status)" %}
+      {% include "detail" label="{{ imgw_water_level_at }}" value="format_value(active.detail?.water_level_observed_at)" %}
+      {% include "detail" label="{{ imgw_water_temperature }}" value="format_value(active.detail?.water_temperature_c, '°C')" %}
+      {% include "detail" label="{{ imgw_flow }}" value="format_value(active.detail?.flow_m3_s, 'm³/s')" %}
+      {% include "detail" label="{{ imgw_warning_level }}" value="format_value(active.detail?.warning_level_cm, 'cm')" %}
+      {% include "detail" label="{{ imgw_alarm_level }}" value="format_value(active.detail?.alarm_level_cm, 'cm')" %}
+      {% include "detail" label="{{ imgw_gauge_zero }}" value="format_value(active.detail?.gauge_zero_m, 'm')" %}
+      {% include "detail" label="{{ imgw_river_km }}" value="format_value(active.detail?.river_km, 'km')" %}
+      {% include "detail" label="{{ imgw_coordinates }}" value="coordinates(active.detail)" %}
+      {% include "detail" label="{{ imgw_founded_year }}" value="format_value(active.detail?.founded_year)" %}
+      {% include "detail" label="{{ imgw_ice_phenomenon }}" value="format_value(active.detail?.ice_phenomenon)" %}
+      {% include "detail" label="{{ imgw_overgrowth_phenomenon }}" value="format_value(active.detail?.overgrowth_phenomenon)" %}
+    </dl>
+  </div>
+</div>

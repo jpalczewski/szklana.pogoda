@@ -1,0 +1,151 @@
+{# The forecast panel: a place search, favourites and the weather of the chosen place. #}
+<fieldset class="forecast-panel" x-data="forecast" @account-changed.window="load_favorites">
+  <legend>{{ forecast_legend }}</legend>
+  <div class="forecast-combo" x-ref="combo" @focusout="leave">
+    <label for="forecast-input">{{ forecast_label }}</label>
+    <div class="forecast-search">
+      <input
+        id="forecast-input"
+        type="text"
+        role="combobox"
+        autocomplete="off"
+        spellcheck="false"
+        aria-autocomplete="list"
+        aria-controls="forecast-list"
+        :aria-expanded="list_visible ? 'true' : 'false'"
+        :aria-activedescendant="active_option"
+        placeholder="{{ forecast_placeholder }}"
+        x-model="query"
+        @focus="focus_search"
+        @input="on_input"
+        @keydown="keydown"
+      />
+      <ul id="forecast-list" class="forecast-suggestions" role="listbox" x-show="list_visible" x-cloak>
+        <template x-for="(city, index) in suggestions" :key="city.name + index">
+          <li
+            role="option"
+            :id="`forecast-option-${index}`"
+            :aria-selected="index === active_index ? 'true' : 'false'"
+            :class="{ active: index === active_index }"
+            x-text="city.name"
+            @pointerdown.prevent="pick(city)"
+            @pointerenter="active_index = index"
+          ></li>
+        </template>
+      </ul>
+    </div>
+    <p class="forecast-hint" x-show="no_results" x-cloak>{{ forecast_no_results }}</p>
+  </div>
+  <div class="field-row forecast-actions">
+    <button type="button" :disabled="locating" @click="locate">{{ forecast_locate }}</button>
+    <span class="imgw-status" x-show="locating" x-cloak>{{ imgw_locating }}</span>
+  </div>
+  <div class="forecast-favorites" x-show="favorites.length > 0" x-cloak>
+    <span id="forecast-favorites-label">{{ favorites_label }}</span>
+    <ul aria-labelledby="forecast-favorites-label">
+      <template x-for="city in favorites" :key="city.name">
+        <li><button type="button" x-text="city.name" @click="pick(city)"></button></li>
+      </template>
+    </ul>
+  </div>
+  <div aria-live="polite">
+    <p class="imgw-status" x-show="loading" x-cloak>{{ loading }}</p>
+    <p class="imgw-status" x-show="status" x-cloak x-text="status"></p>
+  </div>
+  <div class="forecast-result" x-show="place && data" x-cloak>
+    <div class="forecast-title">
+      <h2 class="forecast-place" x-text="place?.label"></h2>
+      <button
+        type="button"
+        class="forecast-star"
+        x-show="place?.named"
+        x-cloak
+        :disabled="saving_favorite"
+        :aria-label="favorite_label"
+        :title="favorite_label"
+        x-text="is_favorite ? '★' : '☆'"
+        @click="toggle_favorite"
+      ></button>
+    </div>
+    <menu role="tablist" aria-label="{{ forecast_tabs_label }}">
+      {% include "forecast_tab" value=now label="{{ forecast_tab_now }}" %}
+      {% include "forecast_tab" value=days label="{{ forecast_tab_days }}" %}
+      {% include "forecast_tab" value=hours label="{{ forecast_tab_hours }}" %}
+    </menu>
+    {% call "forecast_tabpanel" view=now %}
+      <template x-if="now">
+        <div>
+          <p class="forecast-now">
+            <span class="forecast-icon" role="img" :aria-label="now.text" x-html="now.icon"></span>
+            <strong x-text="now.temperature"></strong>
+            <span x-text="now.text"></span>
+          </p>
+          <dl class="forecast-facts">
+            <dt>{{ forecast_feels_like }}</dt>
+            <dd x-text="now.apparent"></dd>
+            <dt>{{ forecast_humidity }}</dt>
+            <dd x-text="now.humidity"></dd>
+            <dt>{{ forecast_wind }}</dt>
+            <dd x-text="now.wind"></dd>
+            <dt>{{ forecast_precipitation }}</dt>
+            <dd x-text="now.precipitation"></dd>
+          </dl>
+        </div>
+      </template>
+
+    {% endcall %}
+    {% call "forecast_tabpanel" view=days cloak=x-cloak %}
+      <table class="forecast-days">
+        <thead>
+          <tr>
+            <th scope="col">{{ forecast_col_day }}</th>
+            <th scope="col">{{ forecast_col_weather }}</th>
+            <th scope="col">{{ forecast_col_range }}</th>
+            <th scope="col">{{ forecast_col_rain }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="day in days" :key="day.date">
+            <tr>
+              <td x-text="day.label"></td>
+              <td><span class="forecast-day-icon" role="img" :aria-label="day.text" :title="day.text" x-html="day.icon"></span></td>
+              <td x-text="day.range"></td>
+              <td x-text="day.chance"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+
+    {% endcall %}
+    {% call "forecast_tabpanel" view=hours cloak=x-cloak %}
+      <div class="forecast-hours-scroll">
+        <table class="forecast-hours">
+          <thead>
+            <tr>
+              <th scope="col">{{ forecast_col_hour }}</th>
+              <th scope="col">{{ forecast_col_weather }}</th>
+              <th scope="col">{{ forecast_col_temperature }}</th>
+              <th scope="col">{{ forecast_col_rain }}</th>
+              <th scope="col">{{ forecast_col_wind }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="(hour, index) in hours" :key="index">
+              <tr :class="{ 'day-start': hour.day }">
+                <td>
+                  <span class="forecast-hour-day" x-show="hour.day" x-text="hour.day"></span>
+                  <span x-text="hour.label"></span>
+                </td>
+                <td><span class="forecast-day-icon" role="img" :aria-label="hour.text" :title="hour.text" x-html="hour.icon"></span></td>
+                <td x-text="hour.temperature"></td>
+                <td x-text="hour.rain"></td>
+                <td x-text="hour.wind"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+    {% endcall %}
+  </div>
+</fieldset>
