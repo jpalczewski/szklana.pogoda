@@ -145,11 +145,11 @@ pub fn find(text: []const u8) ?CityRef {
     if (wanted.len > folded.len) return null;
     const needle = fold(wanted, folded[0..wanted.len]);
 
-    for (all, 0..) |city, index| {
+    for (all, 0..) |*city, index| {
         // zlinter-disable-next-line no_undefined - fold() overwrites candidate before it is read
         var candidate: [max_name_bytes]u8 = undefined;
         if (std.mem.eql(u8, needle, fold(city.name, &candidate))) {
-            return .{ .id = @intCast(index), .city = &city };
+            return .{ .id = @intCast(index), .city = city };
         }
     }
     return null;
@@ -254,6 +254,14 @@ test "find rejects an unknown or empty name" {
     try std.testing.expect(find("Nieistniejace") == null);
     try std.testing.expect(find("") == null);
     try std.testing.expect(find("   ") == null);
+}
+
+test "find returns a pointer into the embedded table, not a stack copy" {
+    for ([_][]const u8{ "Zakopane", "Warszawa", "Żywiec" }) |name| {
+        const found = find(name).?;
+        try std.testing.expect(found.city == byId(found.id).?);
+        try std.testing.expectEqualStrings(byId(found.id).?.name, found.city.name);
+    }
 }
 
 test "the embedded table decodes into the documented layout" {
